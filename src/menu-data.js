@@ -9,7 +9,7 @@ export const menuData = {
   canteens: [
     {
       id: 'canting1',
-      label: '1餐厅',
+      label: '一餐厅',
       floors: [
         { floor: 1, label: '一楼', windows: [
             { num: 1, name: "油饼母鸡汤/砂锅土豆粉", items: [
@@ -172,7 +172,7 @@ export const menuData = {
           ] },
       ],
     },
-    { id: 'canting2', label: '2餐厅', floors: [{ floor: 1, label: '一楼', windows: [] }] },
+    { id: 'canting2', label: '二餐厅', floors: [{ floor: 1, label: '一楼', windows: [] }] },
   ],
   snackStreet: {
     label: '小吃街',
@@ -547,7 +547,7 @@ export const menuData = {
         note: '口味：孜然、麻辣、甘梅、柠檬、五香、番茄',
       },
       {
-        name: '芝士火鸡面烤冷面（罗山首家）',
+        name: '芝士火鸡面烤冷面',
         range: '6-20元',
         items: [
           { dish: '爆款芝士火鸡面烤冷面', price: '15元' },

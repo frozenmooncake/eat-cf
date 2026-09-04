@@ -48,13 +48,17 @@ async function publish() {
   if (!content.value.trim()) return;
   submitting.value = true;
   try {
-    await submitComment(nickname.value, content.value);
+    const data = await submitComment(nickname.value, content.value);
     localStorage.setItem(NICKNAME_STORAGE_KEY, nickname.value);
     content.value = '';
     replyTo.value = null;
-    notice.value = '留言发布成功';
-    sort.value = 'newest';
-    await load();
+    if (data.item?.status === 'pending') {
+      notice.value = '留言已收到，审核通过后展示';
+    } else {
+      notice.value = '留言发布成功';
+      sort.value = 'newest';
+      await load();
+    }
   } catch (e) {
     error.value = e.message;
   } finally {
@@ -85,13 +89,17 @@ async function publishReply() {
   notice.value = '';
   replySubmitting.value = true;
   try {
-    await submitComment(nickname.value, replyContent.value, target.id);
+    const data = await submitComment(nickname.value, replyContent.value, target.id);
     localStorage.setItem(NICKNAME_STORAGE_KEY, nickname.value);
     replyTo.value = null;
     replyContent.value = '';
-    notice.value = '回复发布成功';
-    sort.value = 'newest';
-    await load();
+    if (data.item?.status === 'pending') {
+      notice.value = '回复已收到，审核通过后展示';
+    } else {
+      notice.value = '回复发布成功';
+      sort.value = 'newest';
+      await load();
+    }
   } catch (e) {
     error.value = e.message;
   } finally {

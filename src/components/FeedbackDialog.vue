@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { submitFeedback } from '../api.js';
 import { showToast } from '../utils.js';
 
@@ -21,9 +21,21 @@ const FEEDBACK_TYPES = [
   { key: 'other', name: '其他' },
 ];
 
+const MESSAGE_REQUIRED_TYPES = new Set(['price', 'type', 'name', 'dish_addition', 'dish', 'other']);
+const TYPE_HINTS = {
+  price: '请写明实际价格，例如：XX 菜 12 元',
+  type: '请写明正确类型，例如：应属于米饭/面食/早餐',
+  name: '请写明正确的店名或菜名',
+  dish_addition: '请写明需要补充的菜名和价格（如知道）',
+  dish: '请说明与菜单实际不一致的地方',
+  closed: '如果搬走了，可补充新位置或新店名（选填）',
+  other: '请描述具体情况，方便管理员定位',
+};
+
 const selectedType = ref('');
 const message = ref('');
 const submitting = ref(false);
+const requiresMessage = computed(() => MESSAGE_REQUIRED_TYPES.has(selectedType.value));
 
 watch(() => props.open, (value) => {
   if (value) {
@@ -35,6 +47,10 @@ watch(() => props.open, (value) => {
 async function submit() {
   if (!selectedType.value) {
     showToast('请先选择问题类型');
+    return;
+  }
+  if (requiresMessage.value && !message.value.trim()) {
+    showToast('请填写补充说明，方便管理员定位问题');
     return;
   }
   submitting.value = true;
@@ -72,14 +88,15 @@ async function submit() {
         >{{ t.name }}</button>
       </div>
 
-      <label class="fb-label" for="fb-message">补充说明（可选）</label>
+      <label class="fb-label" for="fb-message">补充说明{{ requiresMessage ? '（必填）' : '（选填）' }}</label>
       <textarea
         id="fb-message"
         v-model="message"
         class="fb-message"
         rows="3"
         maxlength="300"
-        placeholder="例如：实际价格是 xx 元 / 这家已经换成别的店了"
+        :placeholder="TYPE_HINTS[selectedType] || '补充说明可以帮助管理员更快更正数据'"
+        :aria-required="requiresMessage ? 'true' : 'false'"
       ></textarea>
 
       <div class="fb-actions">

@@ -5,7 +5,7 @@
 export const canteens = {
   canting1: {
     id: 'canting1',
-    name: '1餐厅',
+    name: '一餐厅',
     floors: {
    1: {
     1: '油饼母鸡汤/砂锅土豆粉',
@@ -62,7 +62,7 @@ export const canteens = {
   },
   canting2: {
     id: 'canting2',
-    name: '2餐厅',
+    name: '二餐厅',
     floors: { 1: {} },
   },
 };
@@ -138,7 +138,7 @@ export const snackStalls = [
   '陈记爆汁黄焖鸡',
   '张记酱肉小笼包',
   '小廖鸡叉骨',
-  '芝士火鸡面烤冷面（罗山首家）',
+  '芝士火鸡面烤冷面',
   '烤冷面/蛋包火鸡面',
   '杂粮煎饼果子',
   '小厨十里香馄饨',

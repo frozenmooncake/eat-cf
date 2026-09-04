@@ -24,6 +24,18 @@ export function summarizeTags(tagCounts) {
     .sort((a, b) => b.count - a.count);
 }
 
+// 合并多个评分对象的标签票数（窗口 + 各菜品）
+export function summarizeMergedTags(countGroups) {
+  const merged = {};
+  for (const tag of VOTE_TAGS) {
+    merged[tag.key] = (countGroups || []).reduce(
+      (sum, counts) => sum + (Number(counts?.[tag.key]) || 0),
+      0,
+    );
+  }
+  return summarizeTags(merged);
+}
+
 // 根据票数分布算出最终等级（众数，票相同则取星级高的）与星级
 export function summarizeVotes(counts) {
   let bestKey = null;
@@ -46,6 +58,32 @@ export function summarizeVotes(counts) {
   }
 
   return { level: bestKey, stars: LEVEL_MAP[bestKey].stars, total };
+}
+
+// 窗口综合评分：窗口直接票按 3 倍权重计，每道菜品票按 1 倍权重计
+export function summarizeWeightedVotes(windowCounts, dishCountsList = [], windowWeight = 3) {
+  const merged = {};
+  let windowTotal = 0;
+  let dishTotal = 0;
+
+  for (const level of LEVELS) {
+    const direct = Number(windowCounts?.[level.key]) || 0;
+    const dishes = (dishCountsList || []).reduce(
+      (sum, counts) => sum + (Number(counts?.[level.key]) || 0),
+      0,
+    );
+    windowTotal += direct;
+    dishTotal += dishes;
+    merged[level.key] = direct * windowWeight + dishes;
+  }
+
+  const summary = summarizeVotes(merged);
+  return {
+    ...summary,
+    windowTotal,
+    dishTotal,
+    weightedTotal: windowTotal * windowWeight + dishTotal,
+  };
 }
 
 // 生成星级文案，如 '★★★★☆'

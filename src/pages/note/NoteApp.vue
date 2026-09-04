@@ -18,7 +18,7 @@ import GlobalHeader from '../../components/GlobalHeader.vue';
 
     <h2>数据提交格式</h2>
     <p>菜单数据按餐厅、楼层、窗口、菜品与价格整理，可按下面的格式填写：</p>
-    <pre><code>餐厅：1餐厅
+    <pre><code>餐厅：一餐厅
 楼层：1楼
 窗口号：1
 窗口名：油饼母鸡汤/砂锅土豆粉

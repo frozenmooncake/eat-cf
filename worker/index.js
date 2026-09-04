@@ -18,12 +18,14 @@
 //   {PREFIX}feedback:{id}              -> String 反馈详情 JSON
 //   {PREFIX}comment:time                -> ZSet 留言 id，score=提交时间戳(ms)
 //   {PREFIX}comment:hot                 -> ZSet 留言 id，score=点赞数
+//   {PREFIX}comment:pending             -> ZSet 待审留言 id，score=提交时间戳(ms)
 //   {PREFIX}comment:{id}                -> String 留言详情 JSON
 //   {PREFIX}comment:reports             -> ZSet 被举报留言 id，score=举报数
 
 const LEVELS = ['bang', 'top', 'elite', 'npc', 'bad'];
 const VOTE_TAGS = ['tasty', 'value', 'filling'];
-const FEEDBACK_TYPES = ['price', 'type', 'closed', 'name', 'dish', 'other'];
+const FEEDBACK_TYPES = ['price', 'type', 'closed', 'name', 'dish_addition', 'dish', 'other'];
+const FEEDBACK_MESSAGE_REQUIRED_TYPES = new Set(['price', 'type', 'name', 'dish_addition', 'dish', 'other']);
 const DAILY_LIMIT = 3; // 每个身份每天每类（窗口/菜品）最多 3 次
 const COOLDOWN_MS = 3 * 60 * 60 * 1000; // 每类内部间隔 3 小时
 const RATE_TTL_SECONDS = 2 * 24 * 60 * 60; // 48 小时
@@ -32,6 +34,10 @@ const COMMENT_MINUTE_LIMIT = 3;
 const COMMENT_NICKNAME_LIMIT = 16;
 const COMMENT_CONTENT_LIMIT = 256;
 const COMMENT_PAGE_LIMIT = 50;
+const DEFAULT_COMMENT_SENSITIVE_WORDS = [
+  '代写', '代课', '代考', '刷单', '兼职', '办证', '贷款',
+  '加微信', '微信号', '加qq', 'qq号', '手机号',
+];
 
 // 唯一前缀：华水美食盲盒-江淮 (huashui jianghuai)
 const KEY_PREFIX = 'hsj_huashui_meishimanghe_jianghuai_';
@@ -40,7 +46,8 @@ const KEY_PREFIX = 'hsj_huashui_meishimanghe_jianghuai_';
 const key = (name) => `${KEY_PREFIX}${name}`;
 
 // 排行榜与窗口票数属于全校共享数据，做短 TTL 读缓存以减少 Upstash 调用
-const READ_CACHE_TTL_MS = 15 * 1000;
+const READ_WINDOW_CACHE_TTL_MS = 15 * 1000;
+const READ_LEADERBOARD_CACHE_TTL_MS = 100 * 1000;
 const READ_CACHE_MAX_ENTRIES = 500;
 const readCache = new Map();
 
@@ -54,9 +61,9 @@ function readCacheGet(cacheKey) {
   return entry.data;
 }
 
-function readCacheSet(cacheKey, data) {
+function readCacheSet(cacheKey, data, ttlMs = READ_WINDOW_CACHE_TTL_MS) {
   readCache.delete(cacheKey);
-  readCache.set(cacheKey, { data, expiresAt: Date.now() + READ_CACHE_TTL_MS });
+  readCache.set(cacheKey, { data, expiresAt: Date.now() + ttlMs });
   if (readCache.size > READ_CACHE_MAX_ENTRIES) {
     const oldestKey = readCache.keys().next().value;
     if (oldestKey) readCache.delete(oldestKey);
@@ -138,6 +145,16 @@ function normalizeComment(raw) {
   } catch {
     return null;
   }
+}
+
+function commentNeedsReview(env, nickname, content) {
+  const configured = String(env.COMMENT_SENSITIVE_WORDS || '')
+    .split(',')
+    .map((word) => word.trim().toLowerCase())
+    .filter(Boolean);
+  const words = configured.length ? configured : DEFAULT_COMMENT_SENSITIVE_WORDS;
+  const haystack = `${nickname || ''}\n${content || ''}`.toLowerCase();
+  return words.some((word) => haystack.includes(word));
 }
 
 async function getComments(redis, sort, offset, limit, visitorHash, publicId, legacyPublicId, adminPublicIds) {
@@ -407,7 +424,7 @@ async function handleRequest(request, env) {
       return totalB - totalA;
     });
     const payload = { items };
-    readCacheSet(cacheKey, payload);
+    readCacheSet(cacheKey, payload, READ_LEADERBOARD_CACHE_TTL_MS);
     return json(payload);
   }
 
@@ -506,6 +523,9 @@ async function handleRequest(request, env) {
     const type = String(body.type || '');
     if (!FEEDBACK_TYPES.includes(type)) return error('无效的反馈类型');
     const message = String(body.message || '').trim().slice(0, 300);
+    if (FEEDBACK_MESSAGE_REQUIRED_TYPES.has(type) && !message) {
+      return error('请填写补充说明，方便管理员定位问题');
+    }
 
     const ipHash = await hashVisitor(request);
     const now = Date.now();
@@ -587,6 +607,7 @@ async function handleRequest(request, env) {
     const ipHash = await hashVisitor(request);
     const publicId = await getPublicId(request, env);
     const legacyPublicId = await getLegacyPublicId(request, env);
+    const pending = commentNeedsReview(env, nickname, content);
     const script = `
       local record = cjson.decode(ARGV[5])
       if ARGV[4] ~= '' then
@@ -601,11 +622,25 @@ async function handleRequest(request, env) {
       if count > tonumber(ARGV[1]) then return {-1} end
       local encoded = cjson.encode(record)
       redis.call('SET', KEYS[2], encoded)
-      redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])
-      redis.call('ZADD', KEYS[4], 0, ARGV[3])
+      if record.status == 'pending' then
+        redis.call('ZADD', KEYS[6], ARGV[2], ARGV[3])
+      else
+        redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])
+        redis.call('ZADD', KEYS[4], 0, ARGV[3])
+      end
       return {1, encoded}
     `;
-    const draft = { id, nickname, content, ts: now, likes: 0, reports: 0, publicId, legacyPublicId };
+    const draft = {
+      id,
+      nickname,
+      content,
+      ts: now,
+      likes: 0,
+      reports: 0,
+      status: pending ? 'pending' : 'approved',
+      publicId,
+      legacyPublicId,
+    };
     const result = await redis.eval(
       script,
       [
@@ -614,12 +649,18 @@ async function handleRequest(request, env) {
         key('comment:time'),
         key('comment:hot'),
         replyTo ? key(`comment:${replyTo}`) : key('comment:none'),
+        key('comment:pending'),
       ],
       [COMMENT_MINUTE_LIMIT, now, id, replyTo, JSON.stringify(draft)],
     );
     if (Number(result[0]) === -1) return error('每分钟最多发布 3 条留言，请稍后再试', 429);
     if (Number(result[0]) === -2) return error('要回复的留言不存在或已被删除', 404);
-    return json({ ok: true, item: normalizeComment(result[1]) }, 201);
+    const item = normalizeComment(result[1]);
+    return json({
+      ok: true,
+      item,
+      message: item?.status === 'pending' ? '留言已收到，审核通过后展示' : '留言发布成功',
+    }, 201);
   }
 
   const commentPath = url.pathname.match(/^\/comments\/([^/]+)\/(like|report)$/);

@@ -4,7 +4,18 @@ import GlobalHeader from '../../components/GlobalHeader.vue';
 import FeedbackDialog from '../../components/FeedbackDialog.vue';
 import { dishTypeMatches, menuData, dishVoteId, parsePrice } from '../../menu-data.js';
 import { getLeaderboard } from '../../api.js';
-import { LEVEL_MAP, VOTE_TAGS, summarizeTags, summarizeVotes, starsText } from '../../levels.js';
+import {
+  LEVEL_MAP,
+  VOTE_TAGS,
+  summarizeMergedTags,
+  summarizeTags,
+  summarizeVotes,
+  summarizeWeightedVotes,
+  starsText,
+} from '../../levels.js';
+
+const SCORE_CACHE_KEY = 'eatcf-menu-score-cache-v1';
+const SCORE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 const availableRegions = [
   ...menuData.canteens,
@@ -19,6 +30,8 @@ const selectedStars = ref([]);
 const selectedTags = ref([]);
 const minPrice = ref('');
 const maxPrice = ref('');
+const displayMode = ref('expanded');
+const openWindowIds = ref(new Set());
 
 const loading = ref(false);
 const apiError = ref(false);
@@ -52,6 +65,27 @@ function toggle(list, value) {
   return list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
 }
 
+function windowVoteId(regionId, floor, num) {
+  return `${regionId}:${Number(floor)}:${Number(num)}`;
+}
+
+function isWindowOpen(entry) {
+  return displayMode.value === 'expanded' || openWindowIds.value.has(entry.windowId);
+}
+
+function chooseDisplayMode(mode) {
+  displayMode.value = mode;
+  if (mode === 'expanded') openWindowIds.value.clear();
+}
+
+function toggleWindow(entry) {
+  if (openWindowIds.value.has(entry.windowId)) {
+    openWindowIds.value.delete(entry.windowId);
+  } else {
+    openWindowIds.value.add(entry.windowId);
+  }
+}
+
 function itemMatches(item) {
   if (!dishTypeMatches(item, type.value, item)) return false;
   if (selectedStars.value.length && !selectedStars.value.includes(item.stars)) return false;
@@ -61,24 +95,43 @@ function itemMatches(item) {
   return true;
 }
 
+function buildDishItem(item, vote) {
+  const counts = vote?.counts || {};
+  const tagCounts = vote?.tagCounts || {};
+  return {
+    ...item,
+    counts,
+    tagCounts,
+    tags: summarizeTags(tagCounts),
+    ...summarizeVotes(counts),
+  };
+}
+
 function buildWindow(canteen, group, entry) {
-  const items = (entry.items || [])
-    .map((item, dishIndex) => {
-      const vote = voteMap.value.get(dishVoteId(canteen.id, group.floor, entry.num, dishIndex));
-      const counts = vote?.counts || {};
-      const tagCounts = vote?.tagCounts || {};
-      return {
-        ...item,
-        regionId: canteen.id,
-        floor: group.floor,
-        num: entry.num,
-        priceValue: parsePrice(item.price),
-        tags: summarizeTags(tagCounts),
-        ...summarizeVotes(counts),
-      };
-    })
-    .filter(itemMatches);
-  return { ...entry, items };
+  const allItems = (entry.items || []).map((item, dishIndex) => {
+    const vote = voteMap.value.get(dishVoteId(canteen.id, group.floor, entry.num, dishIndex));
+    return {
+      ...buildDishItem(item, vote),
+      regionId: canteen.id,
+      floor: group.floor,
+      num: entry.num,
+      priceValue: parsePrice(item.price),
+    };
+  });
+  const winVote = voteMap.value.get(windowVoteId(canteen.id, group.floor, entry.num));
+  const score = summarizeWeightedVotes(winVote?.counts, allItems.map((item) => item.counts));
+  const windowTags = summarizeMergedTags([
+    winVote?.tagCounts,
+    ...allItems.map((item) => item.tagCounts),
+  ]);
+  const items = allItems.filter(itemMatches);
+  return {
+    ...entry,
+    windowId: windowVoteId(canteen.id, group.floor, entry.num),
+    ...score,
+    windowTags,
+    items,
+  };
 }
 
 function buildFloor(canteen, group) {
@@ -106,21 +159,25 @@ const snackGroups = computed(() => {
   if (!regions.value.includes('snack') || !floors.value.includes(1)) return [];
   return menuData.snackStreet.entries
     .map((entry, stallIndex) => {
-      const items = (entry.items || [])
-        .map((item, dishIndex) => {
-          const vote = voteMap.value.get(dishVoteId('snack', 1, stallIndex + 1, dishIndex));
-          return {
-            ...item,
-            regionId: 'snack',
-            floor: 1,
-            num: stallIndex + 1,
-            priceValue: parsePrice(item.price),
-            tags: summarizeTags(vote?.tagCounts || {}),
-            ...summarizeVotes(vote?.counts || {}),
-          };
-        })
-        .filter(itemMatches);
-      return { ...entry, num: stallIndex + 1, items };
+      const num = stallIndex + 1;
+      const allItems = (entry.items || []).map((item, dishIndex) => {
+        const vote = voteMap.value.get(dishVoteId('snack', 1, num, dishIndex));
+        return {
+          ...buildDishItem(item, vote),
+          regionId: 'snack',
+          floor: 1,
+          num,
+          priceValue: parsePrice(item.price),
+        };
+      });
+      const winVote = voteMap.value.get(windowVoteId('snack', 1, num));
+      const score = summarizeWeightedVotes(winVote?.counts, allItems.map((item) => item.counts));
+      const windowTags = summarizeMergedTags([
+        winVote?.tagCounts,
+        ...allItems.map((item) => item.tagCounts),
+      ]);
+      const items = allItems.filter(itemMatches);
+      return { ...entry, num, windowId: windowVoteId('snack', 1, num), ...score, windowTags, items };
     })
     .filter((entry) => entry.items.length > 0);
 });
@@ -128,11 +185,44 @@ const snackGroups = computed(() => {
 const hasSelectedRegion = computed(() => regions.value.length > 0);
 const hasVisibleContent = computed(() => groups.value.length > 0 || snackGroups.value.length > 0);
 
+function readScoreCache() {
+  try {
+    const raw = localStorage.getItem(SCORE_CACHE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    if (!cached || cached.expiresAt <= Date.now()) {
+      localStorage.removeItem(SCORE_CACHE_KEY);
+      return null;
+    }
+    return cached.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeScoreCache(data) {
+  try {
+    localStorage.setItem(SCORE_CACHE_KEY, JSON.stringify({
+      expiresAt: Date.now() + SCORE_CACHE_TTL_MS,
+      data,
+    }));
+  } catch {
+    // 隐私模式或存储已满时忽略缓存，直接使用本次返回数据
+  }
+}
+
 async function load() {
   loading.value = true;
+  const cached = readScoreCache();
+  if (cached) {
+    voteMap.value = new Map((cached.items || []).map((item) => [item.id, item]));
+    loading.value = false;
+    return;
+  }
   try {
     const data = await getLeaderboard();
     voteMap.value = new Map((data.items || []).map((item) => [item.id, item]));
+    writeScoreCache(data);
   } catch {
     apiError.value = true;
   } finally {
@@ -222,6 +312,23 @@ onMounted(load);
           <input v-model="maxPrice" type="number" min="0" step="0.1" placeholder="最高价" aria-label="最高价" />
         </div>
       </div>
+      <div class="filter-group">
+        <span class="filter-label">展示</span>
+        <div class="filter-options">
+          <button
+            type="button"
+            class="chip"
+            :aria-pressed="displayMode === 'expanded'"
+            @click="chooseDisplayMode('expanded')"
+          >默认展开</button>
+          <button
+            type="button"
+            class="chip"
+            :aria-pressed="displayMode === 'collapsed'"
+            @click="chooseDisplayMode('collapsed')"
+          >默认合并</button>
+        </div>
+      </div>
     </section>
 
     <p v-if="loading" class="menu-empty">加载中...</p>
@@ -234,11 +341,27 @@ onMounted(load);
           <h3>{{ group.label }}</h3>
           <section v-for="entry in group.windows" :key="entry.num" class="menu-window">
             <div class="menu-window-head">
-              <h4>{{ entry.num }}号窗口 · {{ entry.name }}</h4>
+              <h4>
+                {{ entry.num }}号窗口
+                <span class="menu-window-name"> · {{ entry.name }}</span>
+              </h4>
               <button type="button" class="btn fb-trigger" @click="openWindowFeedback(canteen.id, group, entry)">报告问题</button>
             </div>
-            <span v-if="entry.range" class="menu-range">{{ entry.range }}</span>
-            <ul v-if="entry.items.length" class="menu-items">
+            <div class="menu-window-meta">
+              <span v-if="entry.range" class="menu-range">{{ entry.range }}</span>
+              <template v-if="entry.level">
+                <span class="menu-window-score">窗口综合 · {{ LEVEL_MAP[entry.level].name }}</span>
+                <span class="menu-stars">{{ starsText(entry.stars) }}</span>
+              </template>
+              <span v-else class="menu-empty-score">暂无评分</span>
+              <span v-if="entry.windowTotal || entry.dishTotal" class="menu-score-counts">
+                窗口{{ entry.windowTotal }}票 · 菜品{{ entry.dishTotal }}票
+              </span>
+              <div v-if="entry.windowTags.length" class="menu-tags" aria-label="窗口热门标签">
+                <span v-for="tag in entry.windowTags" :key="tag.key">{{ tag.name }} {{ tag.count }}</span>
+              </div>
+            </div>
+            <ul v-if="isWindowOpen(entry) && entry.items.length" class="menu-items">
               <li v-for="item in entry.items" :key="item.dish">
                 <div class="menu-item-main">
                   <span>{{ item.dish }}</span>
@@ -256,7 +379,15 @@ onMounted(load);
                 </div>
               </li>
             </ul>
-            <p v-else class="menu-empty">菜单数据整理中，敬请期待</p>
+            <p v-else-if="isWindowOpen(entry) && !entry.items.length" class="menu-empty">菜单数据整理中，敬请期待</p>
+            <button
+              v-if="displayMode === 'collapsed'"
+              type="button"
+              class="menu-expand-btn"
+              :aria-expanded="isWindowOpen(entry)"
+              :aria-label="isWindowOpen(entry) ? `收起${entry.num}号窗口菜单` : `展开${entry.num}号窗口菜单`"
+              @click="toggleWindow(entry)"
+            >{{ isWindowOpen(entry) ? '收起菜单' : '展开菜单' }}</button>
           </section>
         </section>
       </section>
@@ -265,11 +396,24 @@ onMounted(load);
         <h2>{{ menuData.snackStreet.label }}</h2>
         <section v-for="entry in snackGroups" :key="entry.num" class="menu-window">
           <div class="menu-window-head">
-            <h4>{{ entry.name }}</h4>
+            <h4>{{ entry.num }}号 · {{ entry.name }}</h4>
             <button type="button" class="btn fb-trigger" @click="openSnackFeedback(entry)">报告问题</button>
           </div>
-          <span v-if="entry.range" class="menu-range">{{ entry.range }}</span>
-          <ul class="menu-items">
+          <div class="menu-window-meta">
+            <span v-if="entry.range" class="menu-range">{{ entry.range }}</span>
+            <template v-if="entry.level">
+              <span class="menu-window-score">窗口综合 · {{ LEVEL_MAP[entry.level].name }}</span>
+              <span class="menu-stars">{{ starsText(entry.stars) }}</span>
+            </template>
+            <span v-else class="menu-empty-score">暂无评分</span>
+            <span v-if="entry.windowTotal || entry.dishTotal" class="menu-score-counts">
+              窗口{{ entry.windowTotal }}票 · 菜品{{ entry.dishTotal }}票
+            </span>
+            <div v-if="entry.windowTags.length" class="menu-tags" aria-label="窗口热门标签">
+              <span v-for="tag in entry.windowTags" :key="tag.key">{{ tag.name }} {{ tag.count }}</span>
+            </div>
+          </div>
+          <ul v-if="isWindowOpen(entry) && entry.items.length" class="menu-items">
             <li v-for="item in entry.items" :key="`${entry.num}-${item.dish}`">
               <div class="menu-item-main">
                 <span>{{ item.dish }}</span>
@@ -287,7 +431,15 @@ onMounted(load);
               </div>
             </li>
           </ul>
-          <p v-if="entry.note" class="menu-note">{{ entry.note }}</p>
+          <p v-if="isWindowOpen(entry) && entry.note" class="menu-note">{{ entry.note }}</p>
+          <button
+            v-if="displayMode === 'collapsed'"
+            type="button"
+            class="menu-expand-btn"
+            :aria-expanded="isWindowOpen(entry)"
+            :aria-label="isWindowOpen(entry) ? `收起${entry.num}号菜单` : `展开${entry.num}号菜单`"
+            @click="toggleWindow(entry)"
+          >{{ isWindowOpen(entry) ? '收起菜单' : '展开菜单' }}</button>
         </section>
       </section>
 
@@ -349,6 +501,10 @@ onMounted(load);
   margin-right: var(--spacing-sm);
 }
 
+.menu-window-name {
+  font-weight: 400;
+}
+
 .menu-window-head {
   display: flex;
   align-items: baseline;
@@ -370,12 +526,52 @@ onMounted(load);
 
 .menu-range {
   display: inline-block;
-  margin-left: var(--spacing-sm);
   font-size: 0.85rem;
   color: var(--color-primary);
   background: var(--color-primary-soft);
   padding: 2px 10px;
   border-radius: 999px;
+}
+
+.menu-window-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+}
+
+.menu-window-score {
+  color: var(--color-primary);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.menu-score-counts {
+  padding: 0.1rem 0.45rem;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.menu-expand-btn {
+  display: block;
+  width: 100%;
+  margin-top: var(--spacing-sm);
+  padding: 0.45rem;
+  color: var(--color-primary);
+  background: transparent;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.menu-expand-btn:hover {
+  color: var(--color-accent-strong);
+  background: var(--color-bg-secondary);
+  border-color: var(--color-accent-border);
 }
 
 .menu-items {
@@ -524,10 +720,6 @@ onMounted(load);
 
   .fb-trigger {
     margin-left: auto;
-  }
-
-  .menu-range {
-    margin-left: 0;
   }
 }
 </style>

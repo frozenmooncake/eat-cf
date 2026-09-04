@@ -260,7 +260,7 @@ function drawDish() {
         <span class="filter-label">区域</span>
         <div class="filter-options">
           <button
-            v-for="r in [['canting1','1餐厅'],['canting2','2餐厅'],['snack','小吃街']]"
+            v-for="r in [['canting1','一餐厅'],['canting2','二餐厅'],['snack','小吃街']]"
             :key="r[0]"
             type="button"
             class="chip"
