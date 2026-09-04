@@ -56,21 +56,47 @@ function createRedis(env) {
     return data.result;
   }
 
+  async function pipeline(commands) {
+    if (!commands.length) return [];
+    const res = await fetch(`${env.UPSTASH_REDIS_REST_URL.replace(/\/+$/, '')}/pipeline`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.UPSTASH_REDIS_REST_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(commands),
+    });
+    const data = await res.json();
+    if (!res.ok || (data && !Array.isArray(data) && data.error)) {
+      throw new Error((data && data.error) || `Upstash 请求失败 (${res.status})`);
+    }
+    if (!Array.isArray(data)) throw new Error('Upstash pipeline 响应格式错误');
+    return data.map((item) => {
+      if (item && item.error) throw new Error(item.error);
+      return item && 'result' in item ? item.result : item;
+    });
+  }
+
   return {
     command,
     get: (name) => command(['GET', name]),
     smembers: (name) => command(['SMEMBERS', name]),
     eval: (script, keys, args) => command(['EVAL', script, keys.length, ...keys, ...args]),
+    pipeline,
     async hgetall(name) {
       const result = await command(['HGETALL', name]);
-      if (!result) return {};
-      const counts = {};
-      for (let i = 0; i < result.length; i += 2) {
-        counts[result[i]] = Number(result[i + 1]);
-      }
-      return counts;
+      return hashResultToObject(result);
     },
   };
+}
+
+function hashResultToObject(result) {
+  const counts = {};
+  if (!Array.isArray(result)) return counts;
+  for (let i = 0; i < result.length; i += 2) {
+    counts[result[i]] = Number(result[i + 1]);
+  }
+  return counts;
 }
 
 function textLength(value) {
@@ -93,11 +119,19 @@ async function getComments(redis, sort, offset, limit, ipHash, publicId, adminPu
   const timeIds = (await redis.command(['ZRANGE', key('comment:time'), 0, -1])) || [];
   const floorById = new Map(timeIds.map((id, position) => [id, position + 1]));
   const items = [];
-  for (const id of ids) {
-    const item = normalizeComment(await redis.get(key(`comment:${id}`)));
+  if (!ids.length) return items;
+  const results = await redis.pipeline(
+    ids.flatMap((id) => [
+      ['GET', key(`comment:${id}`)],
+      ['EXISTS', key(`comment:like:${id}:${ipHash}`)],
+    ]),
+  );
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    const item = normalizeComment(results[i * 2]);
     if (item) {
       if (floorById.has(id)) item.floor = floorById.get(id);
-      item.liked = Boolean(await redis.command(['EXISTS', key(`comment:like:${id}:${ipHash}`)]));
+      item.liked = Boolean(Number(results[i * 2 + 1]));
       item.isMine = Boolean(publicId && item.publicId && item.publicId === publicId);
       item.isAdmin = Boolean(item.publicId && adminPublicIds.has(item.publicId));
       items.push(item);
@@ -291,13 +325,23 @@ async function handleRequest(request, env) {
   if (request.method === 'GET' && url.pathname === '/leaderboard') {
     const ids = (await redis.smembers(key('vote:index'))) || [];
     const items = [];
-    for (const id of ids) {
-      const [counts, tagCounts, meta] = await Promise.all([
-        getCounts(redis, id),
-        getTagCounts(redis, id),
-        getWindowMeta(redis, id),
-      ]);
-      items.push({ id, counts, tagCounts, meta });
+    if (ids.length) {
+      const results = await redis.pipeline(
+        ids.flatMap((id) => [
+          ['HGETALL', key(`vote:counts:${id}`)],
+          ['HGETALL', key(`vote:tags:${id}`)],
+          ['GET', key(`vote:meta:${id}`)],
+        ]),
+      );
+      for (let i = 0; i < ids.length; i += 1) {
+        const rawMeta = results[i * 3 + 2];
+        items.push({
+          id: ids[i],
+          counts: hashResultToObject(results[i * 3]),
+          tagCounts: hashResultToObject(results[i * 3 + 1]),
+          meta: rawMeta ? (typeof rawMeta === 'string' ? JSON.parse(rawMeta) : rawMeta) : null,
+        });
+      }
     }
     items.sort((a, b) => {
       const totalA = Object.values(a.counts).reduce((s, n) => s + (Number(n) || 0), 0);
