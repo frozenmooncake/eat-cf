@@ -38,10 +38,10 @@ export function getComments(sort = 'newest', offset = 0, limit = 20) {
   return request(`/comments?sort=${encodeURIComponent(sort)}&offset=${offset}&limit=${limit}`);
 }
 
-export function submitComment(nickname, content) {
+export function submitComment(nickname, content, replyTo = '') {
   return request('/comments', {
     method: 'POST',
-    body: JSON.stringify({ nickname, content }),
+    body: JSON.stringify({ nickname, content, ...(replyTo ? { replyTo } : {}) }),
   });
 }
 

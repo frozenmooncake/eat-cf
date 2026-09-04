@@ -90,10 +90,13 @@ async function getComments(redis, sort, offset, limit, ipHash, publicId, adminPu
   const index = sort === 'hot' ? key('comment:hot') : key('comment:time');
   const command = sort === 'oldest' ? 'ZRANGE' : 'ZREVRANGE';
   const ids = (await redis.command([command, index, offset, offset + limit - 1])) || [];
+  const timeIds = (await redis.command(['ZRANGE', key('comment:time'), 0, -1])) || [];
+  const floorById = new Map(timeIds.map((id, position) => [id, position + 1]));
   const items = [];
   for (const id of ids) {
     const item = normalizeComment(await redis.get(key(`comment:${id}`)));
     if (item) {
+      if (floorById.has(id)) item.floor = floorById.get(id);
       item.liked = Boolean(await redis.command(['EXISTS', key(`comment:like:${id}:${ipHash}`)]));
       item.isMine = Boolean(publicId && item.publicId && item.publicId === publicId);
       item.isAdmin = Boolean(item.publicId && adminPublicIds.has(item.publicId));
@@ -453,6 +456,8 @@ async function handleRequest(request, env) {
     if (textLength(nickname) > COMMENT_NICKNAME_LIMIT) return error('昵称最多 16 字');
     if (!content) return error('留言内容不能为空');
     if (textLength(content) > COMMENT_CONTENT_LIMIT) return error('留言内容最多 256 字');
+    const replyTo = String(body.replyTo || '').trim();
+    if (replyTo && !/^comment_[a-z0-9_]+$/.test(replyTo)) return error('无效的回复对象');
 
     const now = Date.now();
     const id = `comment_${now}_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
@@ -460,31 +465,37 @@ async function handleRequest(request, env) {
     const ipHash = await hashIp(ip);
     const publicId = await getPublicId(request, env);
     const script = `
+      local record = cjson.decode(ARGV[5])
+      if ARGV[4] ~= '' then
+        local parent = redis.call('GET', KEYS[5])
+        if not parent then return {-2} end
+        local parentItem = cjson.decode(parent)
+        record.replyTo = ARGV[4]
+        record.replyToNickname = parentItem.nickname
+      end
       local count = tonumber(redis.call('INCR', KEYS[1]))
       if count == 1 then redis.call('EXPIRE', KEYS[1], 60) end
       if count > tonumber(ARGV[1]) then return {-1} end
-      local floor = tonumber(redis.call('INCR', KEYS[2]))
-      local record = cjson.decode(ARGV[5])
-      record.floor = floor
       local encoded = cjson.encode(record)
-      redis.call('SET', KEYS[3], encoded)
-      redis.call('ZADD', KEYS[4], ARGV[2], ARGV[3])
-      redis.call('ZADD', KEYS[5], 0, ARGV[3])
-      return {floor, encoded}
+      redis.call('SET', KEYS[2], encoded)
+      redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])
+      redis.call('ZADD', KEYS[4], 0, ARGV[3])
+      return {1, encoded}
     `;
     const draft = { id, nickname, content, ts: now, likes: 0, reports: 0, publicId };
     const result = await redis.eval(
       script,
       [
         key(`rate:comment:${ipHash}`),
-        key('comment:floor'),
         key(`comment:${id}`),
         key('comment:time'),
         key('comment:hot'),
+        replyTo ? key(`comment:${replyTo}`) : key('comment:none'),
       ],
-      [COMMENT_MINUTE_LIMIT, now, id, ipHash, JSON.stringify(draft)],
+      [COMMENT_MINUTE_LIMIT, now, id, replyTo, JSON.stringify(draft)],
     );
     if (Number(result[0]) === -1) return error('每分钟最多发布 3 条留言，请稍后再试', 429);
+    if (Number(result[0]) === -2) return error('要回复的留言不存在或已被删除', 404);
     return json({ ok: true, item: normalizeComment(result[1]) }, 201);
   }
 

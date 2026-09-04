@@ -13,9 +13,13 @@ const submitting = ref(false);
 const error = ref('');
 const notice = ref('');
 const nextOffset = ref(null);
+const replyTo = ref(null);
+const replyContent = ref('');
+const replySubmitting = ref(false);
 
 const nicknameLength = computed(() => [...nickname.value].length);
 const contentLength = computed(() => [...content.value].length);
+const replyContentLength = computed(() => [...replyContent.value].length);
 
 function formatTime(ts) {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -47,6 +51,7 @@ async function publish() {
     await submitComment(nickname.value, content.value);
     localStorage.setItem(NICKNAME_STORAGE_KEY, nickname.value);
     content.value = '';
+    replyTo.value = null;
     notice.value = '留言发布成功';
     sort.value = 'newest';
     await load();
@@ -54,6 +59,43 @@ async function publish() {
     error.value = e.message;
   } finally {
     submitting.value = false;
+  }
+}
+
+function startReply(item) {
+  replyTo.value = item;
+  replyContent.value = '';
+  error.value = '';
+  notice.value = '';
+}
+
+function cancelReply() {
+  replyTo.value = null;
+  replyContent.value = '';
+}
+
+function isReplyingTo(item) {
+  return replyTo.value?.id === item.id;
+}
+
+async function publishReply() {
+  const target = replyTo.value;
+  if (!target || !replyContent.value.trim()) return;
+  error.value = '';
+  notice.value = '';
+  replySubmitting.value = true;
+  try {
+    await submitComment(nickname.value, replyContent.value, target.id);
+    localStorage.setItem(NICKNAME_STORAGE_KEY, nickname.value);
+    replyTo.value = null;
+    replyContent.value = '';
+    notice.value = '回复发布成功';
+    sort.value = 'newest';
+    await load();
+  } catch (e) {
+    error.value = e.message;
+  } finally {
+    replySubmitting.value = false;
   }
 }
 
@@ -133,13 +175,30 @@ onMounted(() => load());
           </strong>
           <span>#{{ item.floor }}楼 · {{ formatTime(item.ts) }}</span>
         </div>
-        <p>{{ item.content }}</p>
+        <p v-if="item.replyTo" class="reply-line">回复 <strong>@{{ item.replyToNickname || '留言' }}</strong></p>
+        <p class="comment-content">{{ item.content }}</p>
         <div class="comment-actions">
           <button type="button" :class="{ liked: item.liked }" @click="toggleLike(item)">
             {{ item.liked ? '已赞' : '点赞' }} {{ item.likes || 0 }}
           </button>
+          <button type="button" :class="{ active: isReplyingTo(item) }"
+            @click="isReplyingTo(item) ? cancelReply() : startReply(item)">回复</button>
           <button type="button" @click="report(item)">举报</button>
         </div>
+        <form v-if="isReplyingTo(item)" class="reply-form" @submit.prevent="publishReply">
+          <div class="reply-head">
+            <span>回复 {{ item.nickname }}</span>
+            <button class="text-button" type="button" @click="cancelReply">收起</button>
+          </div>
+          <textarea v-model="replyContent" maxlength="256" rows="2" required
+            placeholder="写下回复内容……"></textarea>
+          <div class="reply-foot">
+            <small>{{ replyContentLength }}/256</small>
+            <button class="btn" type="submit" :disabled="replySubmitting || !replyContent.trim()">
+              {{ replySubmitting ? '回复中…' : '发送回复' }}
+            </button>
+          </div>
+        </form>
       </article>
     </div>
     <p v-else-if="!loading" class="empty">还没有留言，来坐第一楼。</p>
@@ -180,8 +239,16 @@ input:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--color-
 .comment-meta strong .identity-badge { padding: .1rem .35rem; color: var(--color-primary); background: var(--color-bg-secondary); border-radius: 999px; font-weight: 700; }
 .comment-meta strong .identity-badge.admin { color: var(--color-accent-strong); }
 .comment-card p { margin: .75rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment-card .reply-line { margin: .65rem 0 0; color: var(--color-accent-strong); font-size: .8rem; }
+.comment-card .reply-line strong { color: var(--color-accent-strong); font-weight: 700; }
+.comment-card .comment-content { margin-top: .35rem; }
 .comment-actions { display: flex; justify-content: flex-end; gap: .25rem; }
-.comment-actions button:hover, .comment-actions button.liked { color: var(--color-primary); background: var(--color-bg-secondary); }
+.comment-actions button:hover, .comment-actions button.liked, .comment-actions button.active { color: var(--color-primary); background: var(--color-bg-secondary); }
+.comment-actions button.active { color: var(--color-accent-strong); }
+.reply-form { display: grid; gap: .6rem; margin-top: .8rem; padding-top: .8rem; border-top: 1px dashed var(--color-border); }
+.reply-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; color: var(--color-accent-strong); font-size: .85rem; font-weight: 700; }
+.text-button { padding: 0; color: var(--color-text-secondary); background: transparent; border: 0; cursor: pointer; }
+.reply-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; color: var(--color-text-secondary); font-size: .8rem; }
 .empty { padding: 3rem 0; text-align: center; color: var(--color-text-secondary); }
 .load-more { display: block; margin: 1.25rem auto; padding: .65rem 1.5rem; color: var(--color-primary); background: transparent; border: 1px solid var(--color-border); border-radius: 999px; cursor: pointer; }
 @media (max-width: 560px) {
@@ -191,5 +258,7 @@ input:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--color-
   .comment-toolbar { flex-direction: column; }
   .form-foot { align-items: stretch; flex-direction: column; }
   .form-foot .btn { width: 100%; }
+  .reply-foot { align-items: stretch; flex-direction: column; }
+  .reply-foot .btn { width: 100%; }
 }
 </style>
