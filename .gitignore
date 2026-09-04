@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+.vite/
+.dev.vars
+worker/.dev.vars
+worker/.wrangler/
+
+# 本地整理菜单的原图与 OCR 草稿，不上传
+图片-未处理/
+识别小吃街菜单.py
+小吃街菜单数据.js
+static-assertions.mjs
+PLANS.md
