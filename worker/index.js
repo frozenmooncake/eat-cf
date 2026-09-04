@@ -1,8 +1,8 @@
 // 华水美食盲盒-江淮 打分后端 (Cloudflare Worker + Upstash Redis)
 //
 // 限流规则:
-//   - 每个 IP 每天最多打 3 次分
-//   - 两次打分间隔至少 3 小时
+//   - 窗口、菜品分开限流：每个 IP 每天每类最多打 3 次分
+//   - 每类内部两次打分间隔至少 3 小时
 //   - 每个 IP 每天最多提交 20 条数据反馈
 //
 // 数据模型 (Redis，所有键统一带前缀 KEY_PREFIX 防止与其他项目冲突):
@@ -12,8 +12,8 @@
 //   {PREFIX}vote:index                -> Set 已被评分的对象 id
 //   {PREFIX}vote:record:index         -> ZSet 评分记录 id，score=提交时间戳(ms)
 //   {PREFIX}vote:record:{id}          -> String 评分事实 JSON
-//   {PREFIX}rate:{ipHash}:{YYYY-MM-DD} -> String 当日已投票次数 (TTL 2天)
-//   {PREFIX}rate:{ipHash}:last         -> String 上次投票时间戳 (ms)
+//   {PREFIX}rate:{scope}:{ipHash}:{YYYY-MM-DD} -> String 该类别当日已投票次数 (scope=window/dish)
+//   {PREFIX}rate:{scope}:{ipHash}:last -> String 该类别上次投票时间戳 (ms)
 //   {PREFIX}feedback:index             -> ZSet 反馈 id，score=提交时间戳(ms)
 //   {PREFIX}feedback:{id}              -> String 反馈详情 JSON
 //   {PREFIX}comment:time                -> ZSet 留言 id，score=提交时间戳(ms)
@@ -24,8 +24,8 @@
 const LEVELS = ['bang', 'top', 'elite', 'npc', 'bad'];
 const VOTE_TAGS = ['tasty', 'value', 'filling'];
 const FEEDBACK_TYPES = ['price', 'type', 'closed', 'name', 'dish', 'other'];
-const DAILY_LIMIT = 3;
-const COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 小时
+const DAILY_LIMIT = 3; // 每个 IP 每天每类（窗口/菜品）最多 3 次
+const COOLDOWN_MS = 3 * 60 * 60 * 1000; // 每类内部间隔 3 小时
 const RATE_TTL_SECONDS = 2 * 24 * 60 * 60; // 48 小时
 const FEEDBACK_DAILY_LIMIT = 20;
 const COMMENT_MINUTE_LIMIT = 3;
@@ -176,8 +176,9 @@ async function getVoteState(redis, id) {
   return { id, counts, tagCounts, total };
 }
 
-async function recordVote(redis, ip, ipHash, publicId, id, level, meta, tags) {
+async function recordVote(redis, ip, ipHash, publicId, id, level, meta, tags, scope) {
   const now = Date.now();
+  const scopeLabel = scope === 'dish' ? '菜品' : '窗口';
   const recordId = `vote_${now}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
   const record = {
     id: recordId,
@@ -223,8 +224,8 @@ async function recordVote(redis, ip, ipHash, publicId, id, level, meta, tags) {
   const result = await redis.eval(
     script,
     [
-      key(`rate:${ipHash}:${today()}`),
-      key(`rate:${ipHash}:last`),
+      key(`rate:${scope}:${ipHash}:${today()}`),
+      key(`rate:${scope}:${ipHash}:last`),
       key(`vote:counts:${id}`),
       key('vote:index'),
       key(`vote:meta:${id}`),
@@ -238,10 +239,10 @@ async function recordVote(redis, ip, ipHash, publicId, id, level, meta, tags) {
   const status = Number(result[0]);
   if (status === -1) {
     const waitMin = Math.ceil(Number(result[1]) / 60000);
-    return { error: `请 ${Math.max(1, waitMin)} 分钟后再评分` };
+    return { error: `${scopeLabel}评分间隔未到，请 ${Math.max(1, waitMin)} 分钟后再评分` };
   }
   if (status === -2) {
-    return { error: '每个 IP 每天最多评分 3 次，明天再来吧' };
+    return { error: `每个 IP 每天最多对${scopeLabel}评分 3 次，明天再来吧` };
   }
   return { remaining: status };
 }
@@ -353,7 +354,17 @@ async function handleRequest(request, env) {
 
     const ipHash = await hashIp(ip);
     const publicId = await getPublicId(request, env);
-    const limit = await recordVote(redis, ip, ipHash, publicId, id, level, targetMeta, tags);
+    const limit = await recordVote(
+      redis,
+      ip,
+      ipHash,
+      publicId,
+      id,
+      level,
+      targetMeta,
+      tags,
+      isDishId ? 'dish' : 'window',
+    );
     if (limit.error) return error(limit.error, 429);
     const state = await getVoteState(redis, id);
     return json({
