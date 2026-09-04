@@ -8,7 +8,7 @@ import { isNoodle, isRice } from './data.js';
 export const menuData = {
   canteens: [
     {
-      id: 'jianghuai',
+      id: 'canting1',
       label: '1餐厅',
       floors: [
         { floor: 1, label: '一楼', windows: [
@@ -645,12 +645,12 @@ export const menuData = {
   },
 };
 
-const jianghuaiSecondFloor = menuData.canteens
-  .find((item) => item.id === 'jianghuai')
+const canting1SecondFloor = menuData.canteens
+  .find((item) => item.id === 'canting1')
   ?.floors.find((item) => Number(item.floor) === 2);
 
-if (jianghuaiSecondFloor) {
-  const zhuJiaMenu = jianghuaiSecondFloor.windows.find((item) => Number(item.num) === 5);
+if (canting1SecondFloor) {
+  const zhuJiaMenu = canting1SecondFloor.windows.find((item) => Number(item.num) === 5);
   if (zhuJiaMenu) zhuJiaMenu.name = '奉天朱家小馆（覆盖3至5号窗口）';
 
   const replacements = [
@@ -662,7 +662,7 @@ if (jianghuaiSecondFloor) {
     { num: 16, name: '牛羊肉汤', items: [{ dish: '牛肉汤', price: '10元/15元/20元' }, { dish: '羊肉汤', price: '10元/15元/20元' }, { dish: '羊杂汤', price: '8元/10元/15元' }, { dish: '五香油饼', price: '7元/斤' }, { dish: '方便面', price: '1.5元/块' }, { dish: '牛羊丸子汤', price: '7元' }, { dish: '羊肉烩面', price: '11.5元' }] },
   ];
   const replacedNums = new Set([2, 3, ...replacements.map((item) => item.num)]);
-  jianghuaiSecondFloor.windows = jianghuaiSecondFloor.windows
+  canting1SecondFloor.windows = canting1SecondFloor.windows
     .filter((item) => !replacedNums.has(Number(item.num)))
     .concat(replacements)
     .sort((a, b) => Number(a.num) - Number(b.num));
@@ -671,7 +671,7 @@ if (jianghuaiSecondFloor) {
 export function getMenuWindow(regionId, floor, num) {
   const canteen = menuData.canteens.find((item) => item.id === regionId);
   const group = canteen?.floors.find((item) => Number(item.floor) === Number(floor));
-  const menuNum = regionId === 'jianghuai' && Number(floor) === 2 && [3, 4, 5].includes(Number(num))
+  const menuNum = regionId === 'canting1' && Number(floor) === 2 && [3, 4, 5].includes(Number(num))
     ? 5
     : Number(num);
   return group?.windows.find((item) => Number(item.num) === menuNum) || null;

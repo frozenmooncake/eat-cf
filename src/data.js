@@ -3,8 +3,8 @@
 // 楼层 -> 窗口号 -> 窗口名
 // 名字含 \n 表示该窗口同时经营两种食物
 export const canteens = {
-  jianghuai: {
-    id: 'jianghuai',
+  canting1: {
+    id: 'canting1',
     name: '1餐厅',
     floors: {
    1: {
@@ -169,11 +169,11 @@ export function pickFrom(list) {
 
 // 全局随机抽一个窗口
 export function isRice(regionId, floor, num) {
-  return regionId === 'jianghuai' && riceWindows.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
+  return regionId === 'canting1' && riceWindows.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
 }
 
 export function isNoodle(regionId, floor, num) {
-  return regionId === 'jianghuai' && noodleWindows.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
+  return regionId === 'canting1' && noodleWindows.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
 }
 
 export function isOther(regionId, floor, num) {

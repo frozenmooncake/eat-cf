@@ -11,7 +11,7 @@ const rows = ref([]);
 const loading = ref(true);
 const error = ref('');
 const activeList = ref('window');
-const selectedRegion = ref('jianghuai');
+const selectedRegion = ref('canting1');
 const selectedFloor = ref('1');
 const selectedNum = ref('1');
 

@@ -8,7 +8,7 @@ import { canteens, getWindowName, isNoodle, isOther, isRice, pickFrom, snackStal
 import { dishTypeMatches, dishVoteId, getAllDishes, getMenuWindow, priceInRange, windowHasDishInRange } from '../../menu-data.js';
 import { showToast } from '../../utils.js';
 
-const regions = ref(['jianghuai', 'canting2', 'snack']);
+const regions = ref(['canting1', 'canting2', 'snack']);
 const floors = ref([1, 2]);
 const type = ref('all');
 const minPrice = ref('');
@@ -16,6 +16,7 @@ const maxPrice = ref('');
 
 const result = ref(null);
 const selectedDish = ref(null);
+const hasPickedWindow = ref(false);
 
 const feedbackOpen = ref(false);
 const feedbackTarget = ref(null);
@@ -59,9 +60,9 @@ function openDishFeedback() {
   openFeedback(
     {
       kind: 'dish',
-      regionId: result.value.regionId,
-      floor: result.value.floor,
-      num: result.value.num,
+      regionId: selectedDish.value.regionId,
+      floor: selectedDish.value.floor,
+      num: selectedDish.value.num,
       dishIndex: selectedDish.value.index,
       dishName: selectedDish.value.dish,
       windowName,
@@ -92,19 +93,24 @@ const menuWindow = computed(() => {
 
 const dishId = computed(() => {
   if (!selectedDish.value || !result.value) return null;
-  return dishVoteId(result.value.regionId, result.value.floor, result.value.num, selectedDish.value.index);
+  return dishVoteId(
+    selectedDish.value.regionId,
+    selectedDish.value.floor,
+    selectedDish.value.num,
+    selectedDish.value.index,
+  );
 });
 
 const dishMeta = computed(() => {
   if (!selectedDish.value || !result.value) return null;
   return {
     kind: 'dish',
-    regionId: result.value.regionId,
-    floor: result.value.floor,
-    num: result.value.num,
+    regionId: selectedDish.value.regionId,
+    floor: selectedDish.value.floor,
+    num: selectedDish.value.num,
     dishIndex: selectedDish.value.index,
     dishName: selectedDish.value.dish,
-    windowName: menuWindow.value?.name || result.value.plainName || result.value.name,
+    windowName: selectedDish.value.windowName || menuWindow.value?.name || result.value.plainName || result.value.name,
   };
 });
 
@@ -126,7 +132,7 @@ function buildPool() {
         if (!floors.value.includes(floor)) return;
         Object.keys(floorsData[floor]).forEach((nk) => {
           const num = Number(nk);
-          if (regionId === 'jianghuai' && floor === 2 && (num === 4 || num === 5)) return;
+          if (regionId === 'canting1' && floor === 2 && (num === 4 || num === 5)) return;
           if (type.value === 'rice' && !isRice(regionId, floor, num)) return;
           if (type.value === 'noodle' && !isNoodle(regionId, floor, num)) return;
           if (type.value === 'other' && !isOther(regionId, floor, num)) return;
@@ -145,6 +151,7 @@ function draw() {
     showToast('没有符合条件的窗口，请调整筛选条件');
     return;
   }
+  hasPickedWindow.value = true;
   const picked = pickFrom(pool);
   if (picked.kind === 'snack') {
     result.value = {
@@ -172,24 +179,57 @@ function draw() {
   }
 }
 
+function dishMatchesActiveFilters(item) {
+  return dishTypeMatches(item, type.value, item)
+    && (minPrice.value === '' && maxPrice.value === ''
+      ? true
+      : priceInRange(item.price, minPrice.value, maxPrice.value));
+}
+
 function buildDishPool() {
   return getAllDishes()
     .filter((item) => regions.value.includes(item.regionId))
     .filter((item) => floors.value.includes(item.floor))
-    .filter((item) => dishTypeMatches(item, type.value, item))
-    .filter((item) => minPrice.value === '' && maxPrice.value === ''
-      ? true
-      : priceInRange(item.price, minPrice.value, maxPrice.value))
+    .filter(dishMatchesActiveFilters)
+    .map((item) => ({ ...item, index: item.dishIndex }));
+}
+
+function buildSelectedWindowDishPool() {
+  const source = result.value;
+  if (!source || !['window', 'snack'].includes(source.kind)) return [];
+
+  let targetNum = Number(source.num);
+  if (source.kind === 'window') {
+    const menuWindowData = getMenuWindow(source.regionId, source.floor, source.num);
+    if (!menuWindowData) return [];
+    targetNum = Number(menuWindowData.num);
+  }
+
+  return getAllDishes()
+    .filter((item) => item.regionId === source.regionId)
+    .filter((item) => Number(item.floor) === Number(source.floor))
+    .filter((item) => Number(item.num) === targetNum)
+    .filter(dishMatchesActiveFilters)
     .map((item) => ({ ...item, index: item.dishIndex }));
 }
 
 function drawDish() {
-  const pool = buildDishPool();
+  const useSelectedWindow = hasPickedWindow.value
+    && result.value
+    && ['window', 'snack'].includes(result.value.kind);
+  const pool = useSelectedWindow ? buildSelectedWindowDishPool() : buildDishPool();
   if (!pool.length) {
     showToast('没有符合条件的菜品，请调整筛选条件');
     return;
   }
   const picked = pickFrom(pool);
+  if (useSelectedWindow) {
+    result.value.title = '🍽️ 随机抽菜结果';
+    selectedDish.value = { ...picked };
+    return;
+  }
+
+  hasPickedWindow.value = false;
   const isSnack = picked.regionId === 'snack';
   const restaurant = canteens[picked.regionId];
   result.value = {
@@ -220,7 +260,7 @@ function drawDish() {
         <span class="filter-label">区域</span>
         <div class="filter-options">
           <button
-            v-for="r in [['jianghuai','江淮'],['canting2','2餐厅'],['snack','小吃街']]"
+            v-for="r in [['canting1','1餐厅'],['canting2','2餐厅'],['snack','小吃街']]"
             :key="r[0]"
             type="button"
             class="chip"

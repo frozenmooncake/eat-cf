@@ -47,10 +47,10 @@
 
 ## 数据约定
 
-- 餐厅数据按 `canteens` 组织，当前包含江淮餐厅和暂时为空的 2 餐厅
+- 餐厅数据按 `canteens` 组织，当前包含 1 餐厅和暂时为空的 2 餐厅
 - 窗口数据位于 `canteens.<餐厅>.floors[楼层][窗口号]`，窗口名中的 `\n` 表示一窗多品
 - 小吃街数据使用 `snackStalls`
-- 米/面分类使用 `riceWindows` / `noodleWindows`（目前仅对江淮生效）
+- 米/面分类使用 `riceWindows` / `noodleWindows`（目前仅对 1 餐厅生效）
 - 菜单与价格填写到 `menu-data.js`
 - 等级定义在 `levels.js`：`bang`(夯/5星) > `top`(顶级/4星) > `elite`(人上人/3星) > `npc`(NPC/2星) > `bad`(拉完了/1星)
 - 最终等级取票数众数（票数相同取星级高的），星级由等级映射
