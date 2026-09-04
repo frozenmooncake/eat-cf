@@ -1,9 +1,9 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import GlobalHeader from '../../components/GlobalHeader.vue';
 import VotePanel from '../../components/VotePanel.vue';
 import { canteens, getAllWindows, snackStalls } from '../../data.js';
-import { getAllDishes } from '../../menu-data.js';
+import { getAllDishes, getMenuWindow } from '../../menu-data.js';
 import { getLeaderboard } from '../../api.js';
 import { LEVEL_MAP, summarizeTags, summarizeVotes, starsText } from '../../levels.js';
 
@@ -14,6 +14,7 @@ const activeList = ref('window');
 const selectedRegion = ref('canting1');
 const selectedFloor = ref('1');
 const selectedNum = ref('1');
+const selectedDishId = ref('');
 
 const rankRegions = [
   ...Object.values(canteens),
@@ -49,6 +50,39 @@ const selectedWindow = computed(() => {
       windowName: name.replace(/\n/g, ' / '),
     },
   };
+});
+
+const availableDishes = computed(() => {
+  const target = selectedWindow.value;
+  const meta = target?.meta;
+  if (!meta) return [];
+  const targetNum = meta.regionId === 'snack'
+    ? meta.num
+    : Number(getMenuWindow(meta.regionId, meta.floor, meta.num)?.num);
+  if (!Number.isInteger(targetNum)) return [];
+  return getAllDishes()
+    .filter((dish) => dish.regionId === meta.regionId)
+    .filter((dish) => Number(dish.floor) === Number(meta.floor))
+    .filter((dish) => Number(dish.num) === targetNum)
+    .map((dish) => ({
+      ...dish,
+      meta: {
+        kind: 'dish',
+        regionId: meta.regionId,
+        floor: Number(meta.floor),
+        num: targetNum,
+        dishIndex: dish.dishIndex,
+        dishName: dish.dish,
+        windowName: dish.windowName,
+      },
+    }));
+});
+
+const selectedDish = computed(() =>
+  availableDishes.value.find((dish) => dish.id === selectedDishId.value) || null);
+
+watch([selectedRegion, selectedFloor, selectedNum], () => {
+  selectedDishId.value = '';
 });
 
 const visibleRows = computed(() => rows.value.filter((row) =>
@@ -181,6 +215,29 @@ onMounted(load);
         :meta="selectedWindow.meta"
         label="窗口评分"
       />
+      <div v-if="selectedWindow" class="dish-scoring">
+        <div class="dish-head">
+          <h3>单独菜品评分</h3>
+          <span v-if="availableDishes.length">{{ availableDishes.length }} 道菜</span>
+        </div>
+        <label v-if="availableDishes.length" class="dish-select">
+          <span>选择菜品</span>
+          <select v-model="selectedDishId">
+            <option value="" disabled>选择一个菜品</option>
+            <option v-for="dish in availableDishes" :key="dish.id" :value="dish.id">
+              {{ dish.dish }}{{ dish.price ? `（${dish.price}）` : '' }}
+            </option>
+          </select>
+        </label>
+        <p v-else class="dish-empty">这个窗口还没录入菜单，暂无菜品可评。</p>
+        <VotePanel
+          v-if="selectedDish"
+          :key="`${selectedWindow.id}:${selectedDish.id}`"
+          :vote-id="selectedDish.id"
+          :meta="selectedDish.meta"
+          label="菜品评分"
+        />
+      </div>
     </section>
 
     <div class="rank-tabs" role="tablist" aria-label="排行榜类型">
@@ -230,6 +287,13 @@ onMounted(load);
 .window-picker label { display: grid; gap: var(--spacing-xs); color: var(--color-text-secondary); font-size: 0.8rem; }
 .window-picker select { width: 100%; min-width: 0; min-height: 2.75rem; padding: 0.55rem 0.65rem; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 .selected-window { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--spacing-sm); margin-top: var(--spacing-md); }
+.dish-scoring { margin-top: var(--spacing-lg); padding-top: var(--spacing-lg); border-top: 1px dashed var(--color-border); }
+.dish-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--spacing-sm); margin-bottom: var(--spacing-sm); }
+.dish-head h3 { margin: 0; font-size: 1rem; }
+.dish-head span { color: var(--color-text-secondary); font-size: 0.78rem; }
+.dish-select { display: grid; gap: var(--spacing-xs); color: var(--color-text-secondary); font-size: 0.8rem; }
+.dish-select select { width: 100%; min-width: 0; min-height: 2.75rem; padding: 0.55rem 0.65rem; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.dish-empty { margin: 0; padding: 0.8rem; color: var(--color-text-secondary); font-size: 0.85rem; background: var(--color-bg); border: 1px dashed var(--color-border); border-radius: var(--radius-md); }
 .rank-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; margin-bottom: var(--spacing-md); padding: 0.25rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-secondary); }
 .rank-tabs button { min-height: 2.6rem; padding: 0.55rem; color: var(--color-text-secondary); background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
 .rank-tabs button[aria-selected='true'] { color: var(--color-primary); background: var(--color-bg); box-shadow: var(--shadow-sm); font-weight: 700; }
