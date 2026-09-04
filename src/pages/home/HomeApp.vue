@@ -224,7 +224,7 @@ function drawDish() {
   }
   const picked = pickFrom(pool);
   if (useSelectedWindow) {
-    result.value.title = '🍽️ 随机抽菜结果';
+    result.value.title = '🎲 随机窗口';
     selectedDish.value = { ...picked };
     return;
   }
@@ -233,11 +233,11 @@ function drawDish() {
   const isSnack = picked.regionId === 'snack';
   const restaurant = canteens[picked.regionId];
   result.value = {
-    kind: isSnack ? 'dish' : 'window',
+    kind: isSnack ? 'snack' : 'window',
     regionId: picked.regionId,
     floor: picked.floor,
     num: picked.num,
-    title: '🍽️ 随机抽菜结果',
+    title: '🎲 随机窗口',
     name: picked.windowName,
     plainName: picked.windowName,
     info: isSnack ? `小吃街 · ${picked.windowName}` : `${restaurant.name} · ${picked.floor}楼${picked.num}号窗口`,
@@ -321,16 +321,25 @@ function drawDish() {
         <div class="window-info">推荐菜品</div>
         <div class="dish-name">{{ selectedDish.dish }}</div>
         <div v-if="selectedDish.price" class="dish-price">{{ selectedDish.price }}</div>
+        <VoteSummary v-if="dishId" :key="`summary-${dishId}`" :vote-id="dishId" :meta="dishMeta" />
         <button type="button" class="btn fb-trigger fb-trigger--sm" @click="openDishFeedback">菜品数据有误？</button>
-        <VotePanel
-          v-if="dishId"
-          :key="dishId"
-          :vote-id="dishId"
-          :meta="dishMeta"
-          label="菜品评分"
-        />
       </div>
     </section>
+
+    <div class="button-grid">
+      <button type="button" class="btn btn--primary" @click="draw">🎲 开始抽选</button>
+      <button type="button" class="btn btn--primary" @click="drawDish">🍽️ 抽一道菜</button>
+    </div>
+
+    <VotePanel v-if="windowId" :key="`panel-${windowId}`" :vote-id="windowId" :meta="windowMeta" label="窗口评分" />
+
+    <VotePanel
+      v-if="dishId"
+      :key="`dish-${dishId}`"
+      :vote-id="dishId"
+      :meta="dishMeta"
+      label="菜品评分"
+    />
 
     <FeedbackDialog
       :open="feedbackOpen"
@@ -338,13 +347,6 @@ function drawDish() {
       :title="feedbackTitle"
       @close="feedbackOpen = false"
     />
-
-    <VotePanel v-if="windowId" :key="`panel-${windowId}`" :vote-id="windowId" :meta="windowMeta" label="窗口评分" />
-
-    <div class="button-grid">
-      <button type="button" class="btn btn--primary" @click="draw">🎲 开始抽选</button>
-      <button type="button" class="btn btn--primary" @click="drawDish">🍽️ 抽一道菜</button>
-    </div>
 
     <footer class="site-footer">
       <a href="./pages/friends.html" class="footer-link">
