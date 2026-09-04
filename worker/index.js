@@ -1,9 +1,9 @@
 // 华水美食盲盒-江淮 打分后端 (Cloudflare Worker + Upstash Redis)
 //
-// 限流规则:
-//   - 窗口、菜品分开限流：每个 IP 每天每类最多打 3 次分
+// 限流规则（身份 = 出口 IP + 浏览器设备 ID，无设备 ID 时退回纯 IP）:
+//   - 窗口、菜品分开限流：每个身份每天每类最多打 3 次分
 //   - 每类内部两次打分间隔至少 3 小时
-//   - 每个 IP 每天最多提交 20 条数据反馈
+//   - 每个身份每天最多提交 20 条数据反馈
 //
 // 数据模型 (Redis，所有键统一带前缀 KEY_PREFIX 防止与其他项目冲突):
 //   {PREFIX}vote:counts:{targetId}    -> Hash 各等级票数 { bang, top, elite, npc, bad }
@@ -24,7 +24,7 @@
 const LEVELS = ['bang', 'top', 'elite', 'npc', 'bad'];
 const VOTE_TAGS = ['tasty', 'value', 'filling'];
 const FEEDBACK_TYPES = ['price', 'type', 'closed', 'name', 'dish', 'other'];
-const DAILY_LIMIT = 3; // 每个 IP 每天每类（窗口/菜品）最多 3 次
+const DAILY_LIMIT = 3; // 每个身份每天每类（窗口/菜品）最多 3 次
 const COOLDOWN_MS = 3 * 60 * 60 * 1000; // 每类内部间隔 3 小时
 const RATE_TTL_SECONDS = 2 * 24 * 60 * 60; // 48 小时
 const FEEDBACK_DAILY_LIMIT = 20;
@@ -38,6 +38,34 @@ const KEY_PREFIX = 'hsj_huashui_meishimanghe_jianghuai_';
 
 // 给任意 Redis 键加统一前缀
 const key = (name) => `${KEY_PREFIX}${name}`;
+
+// 排行榜与窗口票数属于全校共享数据，做短 TTL 读缓存以减少 Upstash 调用
+const READ_CACHE_TTL_MS = 15 * 1000;
+const READ_CACHE_MAX_ENTRIES = 500;
+const readCache = new Map();
+
+function readCacheGet(cacheKey) {
+  const entry = readCache.get(cacheKey);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    readCache.delete(cacheKey);
+    return null;
+  }
+  return entry.data;
+}
+
+function readCacheSet(cacheKey, data) {
+  readCache.delete(cacheKey);
+  readCache.set(cacheKey, { data, expiresAt: Date.now() + READ_CACHE_TTL_MS });
+  if (readCache.size > READ_CACHE_MAX_ENTRIES) {
+    const oldestKey = readCache.keys().next().value;
+    if (oldestKey) readCache.delete(oldestKey);
+  }
+}
+
+function readCacheDelete(cacheKey) {
+  readCache.delete(cacheKey);
+}
 
 function createRedis(env) {
   async function command(args) {
@@ -112,28 +140,32 @@ function normalizeComment(raw) {
   }
 }
 
-async function getComments(redis, sort, offset, limit, ipHash, publicId, adminPublicIds) {
+async function getComments(redis, sort, offset, limit, visitorHash, publicId, legacyPublicId, adminPublicIds) {
   const index = sort === 'hot' ? key('comment:hot') : key('comment:time');
   const command = sort === 'oldest' ? 'ZRANGE' : 'ZREVRANGE';
   const ids = (await redis.command([command, index, offset, offset + limit - 1])) || [];
-  const timeIds = (await redis.command(['ZRANGE', key('comment:time'), 0, -1])) || [];
-  const floorById = new Map(timeIds.map((id, position) => [id, position + 1]));
   const items = [];
   if (!ids.length) return items;
   const results = await redis.pipeline(
     ids.flatMap((id) => [
       ['GET', key(`comment:${id}`)],
-      ['EXISTS', key(`comment:like:${id}:${ipHash}`)],
+      ['EXISTS', key(`comment:like:${id}:${visitorHash}`)],
+      ['ZRANK', key('comment:time'), id],
     ]),
   );
+  const myIds = new Set([publicId, legacyPublicId].filter(Boolean));
   for (let i = 0; i < ids.length; i += 1) {
-    const id = ids[i];
-    const item = normalizeComment(results[i * 2]);
+    const item = normalizeComment(results[i * 3]);
     if (item) {
-      if (floorById.has(id)) item.floor = floorById.get(id);
-      item.liked = Boolean(Number(results[i * 2 + 1]));
-      item.isMine = Boolean(publicId && item.publicId && item.publicId === publicId);
-      item.isAdmin = Boolean(item.publicId && adminPublicIds.has(item.publicId));
+      const floorIndex = results[i * 3 + 2];
+      if (Number.isInteger(floorIndex)) item.floor = floorIndex + 1;
+      item.liked = Boolean(Number(results[i * 3 + 1]));
+      item.isMine =
+        Boolean(item.publicId && myIds.has(item.publicId)) ||
+        Boolean(item.legacyPublicId && myIds.has(item.legacyPublicId));
+      item.isAdmin =
+        Boolean(item.publicId && adminPublicIds.has(item.publicId)) ||
+        Boolean(item.legacyPublicId && adminPublicIds.has(item.legacyPublicId));
       items.push(item);
     }
   }
@@ -144,16 +176,24 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function hashIp(ip) {
-  const input = new TextEncoder().encode(`${KEY_PREFIX}${ip}`);
-  const digest = await crypto.subtle.digest('SHA-256', input);
+function getClientIp(request) {
+  return request.headers.get('CF-Connecting-IP') || 'unknown';
+}
+
+function getDeviceId(request) {
+  const device = String(request.headers.get('X-Device-Id') || '').trim().slice(0, 128);
+  return /^[A-Za-z0-9_-]{8,128}$/.test(device) ? device : '';
+}
+
+async function hashVisitor(request) {
+  const ip = getClientIp(request);
+  const device = getDeviceId(request);
+  const input = device ? `${KEY_PREFIX}${ip}|${device}` : `${KEY_PREFIX}${ip}`;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function getPublicId(request, env) {
-  const ip = request.headers.get('CF-Connecting-IP');
-  const secret = String(env.COMMENT_ID_SECRET || '');
-  if (!ip || !secret) return '';
+async function hmacHex(secret, value) {
   const keyData = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
@@ -161,11 +201,26 @@ async function getPublicId(request, env) {
     false,
     ['sign'],
   );
-  const digest = await crypto.subtle.sign('HMAC', keyData, new TextEncoder().encode(ip));
+  const digest = await crypto.subtle.sign('HMAC', keyData, new TextEncoder().encode(value));
   return [...new Uint8Array(digest)]
     .slice(0, 6)
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
+}
+
+async function getPublicId(request, env) {
+  const ip = getClientIp(request);
+  const device = getDeviceId(request);
+  const secret = String(env.COMMENT_ID_SECRET || '');
+  if (!ip || !secret) return '';
+  return hmacHex(secret, device ? `${ip}|${device}` : ip);
+}
+
+async function getLegacyPublicId(request, env) {
+  const ip = getClientIp(request);
+  const secret = String(env.COMMENT_ID_SECRET || '');
+  if (!ip || !secret) return '';
+  return hmacHex(secret, ip);
 }
 
 function getAdminPublicIds(env) {
@@ -176,7 +231,7 @@ function cors(res) {
   const headers = new Headers(res.headers);
   headers.set('Access-Control-Allow-Origin', '*');
   headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'Content-Type');
+  headers.set('Access-Control-Allow-Headers', 'Content-Type, X-Device-Id');
   return new Response(res.body, { status: res.status, headers });
 }
 
@@ -279,7 +334,7 @@ async function recordVote(redis, ip, ipHash, publicId, id, level, meta, tags, sc
     return { error: `${scopeLabel}评分间隔未到，请 ${Math.max(1, waitMin)} 分钟后再评分` };
   }
   if (status === -2) {
-    return { error: `每个 IP 每天最多对${scopeLabel}评分 3 次，明天再来吧` };
+    return { error: `每个身份每天最多对${scopeLabel}评分 3 次，明天再来吧` };
   }
   return { remaining: status };
 }
@@ -323,6 +378,9 @@ async function handleRequest(request, env) {
 
   // 排行榜：返回所有有票窗口与菜品的汇总
   if (request.method === 'GET' && url.pathname === '/leaderboard') {
+    const cacheKey = '/leaderboard';
+    const cached = readCacheGet(cacheKey);
+    if (cached) return json(cached);
     const ids = (await redis.smembers(key('vote:index'))) || [];
     const items = [];
     if (ids.length) {
@@ -348,21 +406,28 @@ async function handleRequest(request, env) {
       const totalB = Object.values(b.counts).reduce((s, n) => s + (Number(n) || 0), 0);
       return totalB - totalA;
     });
-    return json({ items });
+    const payload = { items };
+    readCacheSet(cacheKey, payload);
+    return json(payload);
   }
 
   // 单个窗口或菜品票数
   if (request.method === 'GET' && url.pathname === '/window') {
     const id = url.searchParams.get('id');
     if (!id) return error('缺少 id 参数');
+    const cacheKey = `${url.pathname}${url.search}`;
+    const cached = readCacheGet(cacheKey);
+    if (cached) return json(cached);
     const state = await getVoteState(redis, id);
     const meta = await getWindowMeta(redis, id);
-    return json({ ...state, meta });
+    const payload = { ...state, meta };
+    readCacheSet(cacheKey, payload);
+    return json(payload);
   }
 
   // 投票
   if (request.method === 'POST' && url.pathname === '/vote') {
-    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    const ip = getClientIp(request);
     let body;
     try {
       body = await request.json();
@@ -399,7 +464,7 @@ async function handleRequest(request, env) {
       }
     }
 
-    const ipHash = await hashIp(ip);
+    const ipHash = await hashVisitor(request);
     const publicId = await getPublicId(request, env);
     const limit = await recordVote(
       redis,
@@ -413,6 +478,10 @@ async function handleRequest(request, env) {
       isDishId ? 'dish' : 'window',
     );
     if (limit.error) return error(limit.error, 429);
+    readCacheDelete('/leaderboard');
+    for (const cacheKey of readCache.keys()) {
+      if (cacheKey.startsWith('/window?id=')) readCache.delete(cacheKey);
+    }
     const state = await getVoteState(redis, id);
     return json({
       ok: true,
@@ -424,7 +493,7 @@ async function handleRequest(request, env) {
 
   // 提交数据反馈
   if (request.method === 'POST' && url.pathname === '/feedback') {
-    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    const ip = getClientIp(request);
     let body;
     try {
       body = await request.json();
@@ -438,7 +507,7 @@ async function handleRequest(request, env) {
     if (!FEEDBACK_TYPES.includes(type)) return error('无效的反馈类型');
     const message = String(body.message || '').trim().slice(0, 300);
 
-    const ipHash = await hashIp(ip);
+    const ipHash = await hashVisitor(request);
     const now = Date.now();
     const id = `fb_${now}_${Math.random().toString(36).slice(2, 8)}`;
     const publicId = await getPublicId(request, env);
@@ -481,9 +550,19 @@ async function handleRequest(request, env) {
       : 'newest';
     const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
     const limit = Math.min(COMMENT_PAGE_LIMIT, Math.max(1, Number.parseInt(url.searchParams.get('limit') || '20', 10) || 20));
-    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
     const publicId = await getPublicId(request, env);
-    const items = await getComments(redis, sort, offset, limit, await hashIp(ip), publicId, getAdminPublicIds(env));
+    const legacyPublicId = await getLegacyPublicId(request, env);
+    const visitorHash = await hashVisitor(request);
+    const items = await getComments(
+      redis,
+      sort,
+      offset,
+      limit,
+      visitorHash,
+      publicId,
+      legacyPublicId,
+      getAdminPublicIds(env),
+    );
     return json({ items, nextOffset: items.length === limit ? offset + limit : null });
   }
 
@@ -505,9 +584,9 @@ async function handleRequest(request, env) {
 
     const now = Date.now();
     const id = `comment_${now}_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-    const ipHash = await hashIp(ip);
+    const ipHash = await hashVisitor(request);
     const publicId = await getPublicId(request, env);
+    const legacyPublicId = await getLegacyPublicId(request, env);
     const script = `
       local record = cjson.decode(ARGV[5])
       if ARGV[4] ~= '' then
@@ -526,7 +605,7 @@ async function handleRequest(request, env) {
       redis.call('ZADD', KEYS[4], 0, ARGV[3])
       return {1, encoded}
     `;
-    const draft = { id, nickname, content, ts: now, likes: 0, reports: 0, publicId };
+    const draft = { id, nickname, content, ts: now, likes: 0, reports: 0, publicId, legacyPublicId };
     const result = await redis.eval(
       script,
       [
@@ -547,8 +626,7 @@ async function handleRequest(request, env) {
   if (request.method === 'POST' && commentPath) {
     const [, id, action] = commentPath;
     if (!/^comment_[a-z0-9_]+$/.test(id)) return error('无效的留言 id');
-    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-    const ipHash = await hashIp(ip);
+    const ipHash = await hashVisitor(request);
     const isLike = action === 'like';
     const publicId = isLike ? '' : await getPublicId(request, env);
     const script = `

@@ -1,5 +1,21 @@
 // 通用工具函数
 
+const DEVICE_ID_STORAGE_KEY = 'hsj_visitor_device_id_v1';
+
+// 浏览器级匿名访客 ID：用于校园 NAT 下区分不同设备
+export function getDeviceId() {
+  try {
+    let deviceId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (!deviceId) {
+      deviceId = crypto.randomUUID ? crypto.randomUUID() : `d${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+      localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
+    }
+    return deviceId;
+  } catch {
+    return '';
+  }
+}
+
 // 复制文本到剪贴板，返回 Promise
 export async function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {

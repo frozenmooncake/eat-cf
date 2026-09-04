@@ -1,9 +1,15 @@
 import { API_BASE } from './config.js';
+import { getDeviceId } from './utils.js';
 
-async function request(path, options) {
+async function request(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (!path.startsWith('/leaderboard')) {
+    const deviceId = getDeviceId();
+    if (deviceId) headers['X-Device-Id'] = deviceId;
+  }
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers: { ...headers, ...(options.headers || {}) },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
