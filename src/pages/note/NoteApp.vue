@@ -17,18 +17,18 @@ import GlobalHeader from '../../components/GlobalHeader.vue';
     </div>
 
     <h2>数据提交格式</h2>
-    <pre><code>餐厅名：
-1楼：
-窗口号,窗口名
-窗口号,窗口名
-...
-2楼：
-窗口号,窗口名
-窗口号,窗口名
-...</code></pre>
-
-    <p>请将数据发送至：<br />
+    <p>菜单数据按餐厅、楼层、窗口、菜品与价格整理，可按下面的格式填写：</p>
+    <pre><code>餐厅：1餐厅
+楼层：1楼
+窗口号：1
+窗口名：油饼母鸡汤/砂锅土豆粉
+菜品：招牌葱油饼 2元/3元/4元
+菜品：滋补母鸡汤 3元
+菜品：砂锅土豆粉 10元</code></pre>
+    <p>直接拍菜单照片发送也可以；发现已有数据有误时，通过站内的“报告数据问题”提交也可以。<br />
+    请将数据发送至：<br />
     📧 <a href="mailto:xyrct301@outlook.com">xyrct301@outlook.com</a></p>
+    <p class="note-ai">站内数据由 AI 扫描，如有出错请及时反馈。</p>
 
     <hr />
 
@@ -52,6 +52,7 @@ import GlobalHeader from '../../components/GlobalHeader.vue';
 .page-note hr { border: none; border-top: 1px solid var(--color-border); margin: var(--spacing-xl) 0; }
 pre { background-color: var(--color-bg-secondary); padding: var(--spacing-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow-x: auto; font-size: 0.95rem; }
 code { color: var(--color-primary); font-family: Consolas, Monaco, monospace; }
+.note-ai { color: var(--color-accent-strong); font-weight: 600; }
 .note-end { color: var(--color-text-secondary); }
 .note-actions { margin-top: var(--spacing-xl); display: flex; justify-content: center; }
 .return-home { padding: 0.7rem 2rem; font-size: 1rem; }
