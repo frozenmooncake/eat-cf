@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import GlobalHeader from '../../components/GlobalHeader.vue';
 import VotePanel from '../../components/VotePanel.vue';
 import VoteSummary from '../../components/VoteSummary.vue';
@@ -13,6 +13,24 @@ const floors = ref([1, 2]);
 const type = ref('all');
 const minPrice = ref('');
 const maxPrice = ref('');
+
+// 楼层选项随已选区域变化：不含一餐厅时只保留现有区域实际存在的楼层
+const floorOptions = computed(() => {
+  const options = new Set();
+  for (const regionId of regions.value) {
+    if (regionId === 'snack') {
+      options.add(1);
+      continue;
+    }
+    Object.keys(canteens[regionId]?.floors || {}).forEach((floorKey) => options.add(Number(floorKey)));
+  }
+  return [...options].sort((a, b) => a - b);
+});
+
+watch(floorOptions, (options) => {
+  const kept = floors.value.filter((floor) => options.includes(floor));
+  floors.value = kept.length ? kept : (options.length ? [options[0]] : []);
+});
 
 const result = ref(null);
 const selectedDish = ref(null);
@@ -273,7 +291,7 @@ function drawDish() {
         <span class="filter-label">楼层</span>
         <div class="filter-options">
           <button
-            v-for="f in [1,2]"
+            v-for="f in floorOptions"
             :key="f"
             type="button"
             class="chip"

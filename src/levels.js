@@ -9,6 +9,14 @@ export const LEVELS = [
 
 export const LEVEL_MAP = Object.fromEntries(LEVELS.map((level) => [level.key, level]));
 
+// 排行榜综合分：总票数权重 60，众数星级权重 40（每票/每星按此比例计分）
+export const RANK_VOTE_WEIGHT = 60;
+export const RANK_STAR_WEIGHT = 40;
+
+export function rankScore({ total = 0, stars = 0 } = {}) {
+  return total * RANK_VOTE_WEIGHT + stars * RANK_STAR_WEIGHT;
+}
+
 export const VOTE_TAGS = [
   { key: 'tasty', name: '好吃' },
   { key: 'value', name: '实惠' },

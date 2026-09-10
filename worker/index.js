@@ -23,6 +23,9 @@
 //   {PREFIX}comment:reports             -> ZSet 被举报留言 id，score=举报数
 
 const LEVELS = ['bang', 'top', 'elite', 'npc', 'bad'];
+const LEVEL_STARS = { bang: 5, top: 4, elite: 3, npc: 2, bad: 1 };
+const RANK_VOTE_WEIGHT = 60;
+const RANK_STAR_WEIGHT = 40;
 const VOTE_TAGS = ['tasty', 'value', 'filling'];
 const FEEDBACK_TYPES = ['price', 'type', 'closed', 'name', 'dish_addition', 'dish', 'other'];
 const FEEDBACK_MESSAGE_REQUIRED_TYPES = new Set(['price', 'type', 'name', 'dish_addition', 'dish', 'other']);
@@ -132,6 +135,28 @@ function hashResultToObject(result) {
     counts[result[i]] = Number(result[i + 1]);
   }
   return counts;
+}
+
+// 排行榜综合分 = 总票数 × 60 + 众数星级 × 40，与前端 levels.js 保持一致
+function leaderboardRank(item) {
+  const counts = item.counts || {};
+  const total = Object.values(counts).reduce((sum, count) => sum + (Number(count) || 0), 0);
+  if (!total) return { total: 0, stars: 0, score: 0 };
+  let bestCount = -1;
+  let bestStars = 0;
+  for (const level of LEVELS) {
+    const count = Number(counts[level]) || 0;
+    const stars = LEVEL_STARS[level];
+    if (count > bestCount || (count === bestCount && stars > bestStars)) {
+      bestCount = count;
+      bestStars = stars;
+    }
+  }
+  return {
+    total,
+    stars: bestStars,
+    score: total * RANK_VOTE_WEIGHT + bestStars * RANK_STAR_WEIGHT,
+  };
 }
 
 function textLength(value) {
@@ -419,9 +444,9 @@ async function handleRequest(request, env) {
       }
     }
     items.sort((a, b) => {
-      const totalA = Object.values(a.counts).reduce((s, n) => s + (Number(n) || 0), 0);
-      const totalB = Object.values(b.counts).reduce((s, n) => s + (Number(n) || 0), 0);
-      return totalB - totalA;
+      const rankA = leaderboardRank(a);
+      const rankB = leaderboardRank(b);
+      return rankB.score - rankA.score || rankB.total - rankA.total || rankB.stars - rankA.stars;
     });
     const payload = { items };
     readCacheSet(cacheKey, payload, READ_LEADERBOARD_CACHE_TTL_MS);

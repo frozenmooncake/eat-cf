@@ -63,7 +63,17 @@ export const canteens = {
   canting2: {
     id: 'canting2',
     name: '二餐厅',
-    floors: { 1: {} },
+    floors: {
+      1: {
+        1: '麻辣烫江湖',
+        2: '鸡汤米线',
+        3: '兰州牛肉面',
+        4: '米饭套餐',
+        5: '精品早餐',
+        6: '私房小厨',
+        7: '小郑家一口鲜馄饨',
+      },
+    },
   },
 };
 
@@ -118,18 +128,30 @@ export const noodleWindows = [
   [2, 24], // 姥姥家面饭馆
 ];
 
+// 二餐厅一楼窗口分类（照片 OCR 初版，编号待实地核对）
+const canting2RiceWindows = [
+  [1, 4], // 米饭套餐
+  [1, 6], // 私房小厨（炒饭/炒面双分类）
+];
+
+const canting2NoodleWindows = [
+  [1, 1], // 麻辣烫江湖
+  [1, 2], // 鸡汤米线
+  [1, 3], // 兰州牛肉面
+  [1, 6], // 私房小厨（炒饭/炒面双分类）
+  [1, 7], // 小郑家一口鲜馄饨
+];
+
 // 小吃街摊位名单（随机抽选用）
 export const snackStalls = [
   '沈阳喷醋鸡架',
-  '酥饼/合子摊',
-  '烧烤串摊A',
-  '烧烤串摊B',
-  '烧烤串摊C',
+  '香酥烧饼',
+  '烧烤串摊',
   '搞杯喝嘞（柠檬茶）',
   '福鼎肉片',
   '牛大嘴炒饭',
   '小陈大福馄饨',
-  '手工水饺/千里香馄饨',
+  '席胖胖（手工水饺/千里香馄饨）',
   '华水老字号肉夹馍',
   '口口香炒饭',
   '方家炒饭',
@@ -138,10 +160,33 @@ export const snackStalls = [
   '陈记爆汁黄焖鸡',
   '张记酱肉小笼包',
   '小廖鸡叉骨',
-  '芝士火鸡面烤冷面',
-  '烤冷面/蛋包火鸡面',
+  '罗山第一家（芝士火鸡面·烤冷面）',
   '杂粮煎饼果子',
   '小厨十里香馄饨',
+  '阜阳卷馍',
+  '鸡柳烧饼',
+  '脆皮烤肠 烤毛蛋',
+  '陈记 无籽冰糖葫芦',
+  '大饼鸡蛋·铁板炒饭',
+  '经典臭豆腐·馍夹万物',
+  '烤炉鸡蛋灌饼',
+  '烤生蚝（猛男精品）',
+  '廖廖鸡叉骨',
+  '螺蛳粉·串串香',
+  '梅干菜潼关肉夹馍·关东煮（酱香饼）',
+  '迷你小串冰糖葫芦',
+  '南昌拌粉（米线/面）',
+  '陕西味道（新家园牛肉面馆）',
+  '铁锅焖面',
+  '土家酱香饼',
+  '武汉黑鸭',
+  '现卤凉皮·肉夹馍',
+  '新奥尔良烤鸡腿·烤鸭腿',
+  '鸭王（自选鸭货）',
+  '张记（正宗长沙臭豆腐）',
+  '串串香麻辣烫',
+  '川人川味',
+  '来杯冰沙（饮品）',
 ];
 
 // 全部门店列表（随机抽选用）
@@ -169,11 +214,21 @@ export function pickFrom(list) {
 
 // 全局随机抽一个窗口
 export function isRice(regionId, floor, num) {
-  return regionId === 'canting1' && riceWindows.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
+  const list = regionId === 'canting1'
+    ? riceWindows
+    : regionId === 'canting2'
+      ? canting2RiceWindows
+      : [];
+  return list.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
 }
 
 export function isNoodle(regionId, floor, num) {
-  return regionId === 'canting1' && noodleWindows.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
+  const list = regionId === 'canting1'
+    ? noodleWindows
+    : regionId === 'canting2'
+      ? canting2NoodleWindows
+      : [];
+  return list.some(([itemFloor, itemNum]) => itemFloor === floor && itemNum === num);
 }
 
 export function isOther(regionId, floor, num) {

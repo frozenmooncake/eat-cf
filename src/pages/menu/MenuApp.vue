@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import GlobalHeader from '../../components/GlobalHeader.vue';
 import FeedbackDialog from '../../components/FeedbackDialog.vue';
 import { dishTypeMatches, menuData, dishVoteId, parsePrice } from '../../menu-data.js';
 import { getLeaderboard } from '../../api.js';
+import { fuzzyMatchAny } from '../../search.js';
 import {
   LEVEL_MAP,
   VOTE_TAGS,
@@ -25,7 +26,27 @@ const availableFloors = menuData.canteens.flatMap((c) => c.floors.map((f) => f.f
 
 const regions = ref(availableRegions.map((c) => c.id));
 const floors = ref([...availableFloors]);
+// 楼层选项随已选区域变化：不含一餐厅时只显示所选区域实际存在的楼层
+const floorOptions = computed(() => {
+  const options = new Set();
+  for (const regionId of regions.value) {
+    if (regionId === 'snack') {
+      options.add(1);
+      continue;
+    }
+    const canteen = menuData.canteens.find((c) => c.id === regionId);
+    (canteen?.floors || []).forEach((group) => options.add(Number(group.floor)));
+  }
+  return [...options].sort((a, b) => a - b);
+});
+
+watch(floorOptions, (options) => {
+  const kept = floors.value.filter((floor) => options.includes(floor));
+  floors.value = kept.length ? kept : (options.length ? [options[0]] : []);
+});
+
 const type = ref('all');
+const keyword = ref('');
 const selectedStars = ref([]);
 const selectedTags = ref([]);
 const minPrice = ref('');
@@ -70,7 +91,9 @@ function windowVoteId(regionId, floor, num) {
 }
 
 function isWindowOpen(entry) {
-  return displayMode.value === 'expanded' || openWindowIds.value.has(entry.windowId);
+  return displayMode.value === 'expanded'
+    || keyword.value.trim() !== ''
+    || openWindowIds.value.has(entry.windowId);
 }
 
 function chooseDisplayMode(mode) {
@@ -124,7 +147,8 @@ function buildWindow(canteen, group, entry) {
     winVote?.tagCounts,
     ...allItems.map((item) => item.tagCounts),
   ]);
-  const items = allItems.filter(itemMatches);
+  const items = allItems.filter((item) => itemMatches(item)
+    && fuzzyMatchAny([item.dish, entry.name, canteen.label], keyword.value));
   return {
     ...entry,
     windowId: windowVoteId(canteen.id, group.floor, entry.num),
@@ -176,7 +200,8 @@ const snackGroups = computed(() => {
         winVote?.tagCounts,
         ...allItems.map((item) => item.tagCounts),
       ]);
-      const items = allItems.filter(itemMatches);
+      const items = allItems.filter((item) => itemMatches(item)
+        && fuzzyMatchAny([item.dish, entry.name, menuData.snackStreet.label], keyword.value));
       return { ...entry, num, windowId: windowVoteId('snack', 1, num), ...score, windowTags, items };
     })
     .filter((entry) => entry.items.length > 0);
@@ -240,6 +265,19 @@ onMounted(load);
 
     <section class="menu-filter" aria-label="菜单筛选">
       <div class="filter-group">
+        <span class="filter-label">搜索</span>
+        <div class="filter-options filter-search">
+          <input
+            v-model="keyword"
+            type="search"
+            class="filter-search-input"
+            placeholder="搜索菜品、窗口或摊位（支持模糊匹配）"
+            aria-label="搜索菜品、窗口或摊位"
+          />
+          <button v-if="keyword" type="button" class="chip" @click="keyword = ''">清除</button>
+        </div>
+      </div>
+      <div class="filter-group">
         <span class="filter-label">区域</span>
         <div class="filter-options">
           <button
@@ -256,7 +294,7 @@ onMounted(load);
         <span class="filter-label">楼层</span>
         <div class="filter-options">
           <button
-            v-for="f in availableFloors"
+            v-for="f in floorOptions"
             :key="f"
             type="button"
             class="chip"
@@ -678,6 +716,21 @@ onMounted(load);
 
 .filter-price {
   align-items: center;
+}
+
+.filter-search {
+  align-items: center;
+}
+
+.filter-search-input {
+  flex: 1;
+  min-width: 8rem;
+  min-height: 2.4rem;
+  padding: 0.4rem 0.6rem;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
 }
 
 .filter-price input {

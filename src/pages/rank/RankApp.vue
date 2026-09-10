@@ -5,7 +5,8 @@ import VotePanel from '../../components/VotePanel.vue';
 import { canteens, getAllWindows, snackStalls } from '../../data.js';
 import { getAllDishes, getMenuWindow } from '../../menu-data.js';
 import { getLeaderboard } from '../../api.js';
-import { LEVEL_MAP, summarizeTags, summarizeVotes, starsText } from '../../levels.js';
+import { fuzzyMatchAny } from '../../search.js';
+import { LEVEL_MAP, rankScore, summarizeTags, summarizeVotes, starsText } from '../../levels.js';
 
 const rows = ref([]);
 const loading = ref(true);
@@ -15,11 +16,23 @@ const selectedRegion = ref('canting1');
 const selectedFloor = ref('1');
 const selectedNum = ref('1');
 const selectedDishId = ref('');
+const rankKeyword = ref('');
+const voteKeyword = ref('');
+const dishKeyword = ref('');
+
+// 窗口榜列表上限：当前勾选区域存在未评分窗口时最多 36 条，全部有评分后最多 50 条
+const WINDOW_RANK_LIMIT_UNSCORED = 36;
+const WINDOW_RANK_LIMIT_SCORED = 50;
 
 const rankRegions = [
   ...Object.values(canteens),
   { id: 'snack', name: '小吃街', floors: { 1: {} } },
 ];
+const rankingRegionOptions = [
+  ...Object.values(canteens).map(({ id, name }) => ({ id, name })),
+  { id: 'snack', name: '小吃街' },
+];
+const selectedRankingRegions = ref(Object.keys(canteens));
 const availableCanteens = computed(() => rankRegions);
 const availableFloors = computed(() => selectedRegion.value === 'snack'
   ? [1]
@@ -31,6 +44,49 @@ const availableWindows = computed(() => {
   const windows = canteens[selectedRegion.value]?.floors[selectedFloor.value] || {};
   return Object.entries(windows).map(([num, name]) => ({ num: Number(num), name: name.replace(/\n/g, ' / ') }));
 });
+
+const regionLabel = (regionId) => (regionId === 'snack' ? '小吃街' : canteens[regionId]?.name || regionId);
+
+const scoringWindows = computed(() => {
+  const list = [];
+  for (const canteen of Object.values(canteens)) {
+    for (const [floorKey, windows] of Object.entries(canteen.floors || {})) {
+      for (const [num, name] of Object.entries(windows)) {
+        list.push({
+          regionId: canteen.id,
+          floor: Number(floorKey),
+          num: Number(num),
+          name: name.replace(/\n/g, ' / '),
+          label: `${canteen.name} · ${floorKey}楼${num}号`,
+        });
+      }
+    }
+  }
+  snackStalls.forEach((name, index) => list.push({
+    regionId: 'snack',
+    floor: 1,
+    num: index + 1,
+    name,
+    label: `小吃街 · ${index + 1}号`,
+  }));
+  return list;
+});
+
+const matchedWindows = computed(() => {
+  const kw = voteKeyword.value.trim();
+  if (!kw) return [];
+  return scoringWindows.value
+    .filter((win) => fuzzyMatchAny([win.name, win.label], kw))
+    .slice(0, 40);
+});
+
+function pickScoringWindow(win) {
+  selectedRegion.value = win.regionId;
+  selectedFloor.value = String(win.floor);
+  selectedNum.value = String(win.num);
+  selectedDishId.value = '';
+  voteKeyword.value = '';
+}
 
 const selectedWindow = computed(() => {
   const floor = Number(selectedFloor.value);
@@ -81,12 +137,31 @@ const availableDishes = computed(() => {
 const selectedDish = computed(() =>
   availableDishes.value.find((dish) => dish.id === selectedDishId.value) || null);
 
+const filteredDishes = computed(() => {
+  const kw = dishKeyword.value.trim();
+  if (!kw) return availableDishes.value;
+  return availableDishes.value.filter((dish) => fuzzyMatchAny([dish.dish, dish.price], kw));
+});
+
 watch([selectedRegion, selectedFloor, selectedNum], () => {
   selectedDishId.value = '';
 });
 
-const visibleRows = computed(() => rows.value.filter((row) =>
-  row.kind === activeList.value && row.regionId === selectedRegion.value));
+const visibleRows = computed(() => {
+  const filtered = rows.value.filter((row) =>
+    row.kind === activeList.value
+    && selectedRankingRegions.value.includes(row.regionId)
+    && fuzzyMatchAny([row.name, row.windowName, regionLabel(row.regionId)], rankKeyword.value));
+  if (activeList.value !== 'window' || !filtered.length) return filtered;
+  const allScored = filtered.every((row) => row.total > 0);
+  return filtered.slice(0, allScored ? WINDOW_RANK_LIMIT_SCORED : WINDOW_RANK_LIMIT_UNSCORED);
+});
+
+function toggleRankingRegion(regionId) {
+  selectedRankingRegions.value = selectedRankingRegions.value.includes(regionId)
+    ? selectedRankingRegions.value.filter((id) => id !== regionId)
+    : [...selectedRankingRegions.value, regionId];
+}
 
 function syncFloor() {
   selectedFloor.value = String(availableFloors.value[0] ?? '');
@@ -157,7 +232,9 @@ async function load() {
           ...summarizeVotes(counts),
         };
       });
-    rows.value = [...windows, ...dishes].sort((a, b) => b.total - a.total || b.stars - a.stars);
+    rows.value = [...windows, ...dishes].sort(
+      (a, b) => rankScore(b) - rankScore(a) || b.total - a.total || b.stars - a.stars,
+    );
     error.value = '';
   } catch (e) {
     error.value = e.message;
@@ -182,6 +259,24 @@ onMounted(load);
       <div class="manual-head">
         <h2 id="manual-vote-title">手动选择窗口评分</h2>
         <p>无需等待随机抽取，直接找到想评分的窗口。</p>
+      </div>
+      <div class="manual-search">
+        <input
+          v-model="voteKeyword"
+          type="search"
+          class="search-input"
+          placeholder="搜索窗口或摊位（如：麻辣烫、3楼、小吃街）"
+          aria-label="搜索窗口或摊位"
+        />
+        <ul v-if="voteKeyword.trim()" class="search-results">
+          <li v-for="win in matchedWindows" :key="`${win.regionId}:${win.floor}:${win.num}`">
+            <button type="button" class="search-result" @click="pickScoringWindow(win)">
+              <strong>{{ win.name }}</strong>
+              <span>{{ win.label }}</span>
+            </button>
+          </li>
+          <li v-if="!matchedWindows.length" class="search-empty">没有找到匹配的窗口</li>
+        </ul>
       </div>
       <div class="window-picker">
         <label>
@@ -220,15 +315,28 @@ onMounted(load);
           <h3>单独菜品评分</h3>
           <span v-if="availableDishes.length">{{ availableDishes.length }} 道菜</span>
         </div>
-        <label v-if="availableDishes.length" class="dish-select">
-          <span>选择菜品</span>
-          <select v-model="selectedDishId">
-            <option value="" disabled>选择一个菜品</option>
-            <option v-for="dish in availableDishes" :key="dish.id" :value="dish.id">
-              {{ dish.dish }}{{ dish.price ? `（${dish.price}）` : '' }}
-            </option>
-          </select>
-        </label>
+        <div v-if="availableDishes.length" class="dish-filters">
+          <label class="dish-select">
+            <span>搜索菜品</span>
+            <input
+              v-model="dishKeyword"
+              type="search"
+              class="search-input"
+              placeholder="搜索菜品（支持模糊匹配）"
+              aria-label="搜索菜品"
+            />
+          </label>
+          <label class="dish-select">
+            <span>选择菜品</span>
+            <select v-model="selectedDishId">
+              <option value="" disabled>选择一个菜品</option>
+              <option v-for="dish in filteredDishes" :key="dish.id" :value="dish.id">
+                {{ dish.dish }}{{ dish.price ? `（${dish.price}）` : '' }}
+              </option>
+            </select>
+          </label>
+          <p v-if="!filteredDishes.length" class="dish-empty">没有匹配的菜品</p>
+        </div>
         <p v-else class="dish-empty">这个窗口还没录入菜单，暂无菜品可评。</p>
         <VotePanel
           v-if="selectedDish"
@@ -245,8 +353,34 @@ onMounted(load);
       <button type="button" role="tab" :aria-selected="activeList === 'dish'" @click="activeList = 'dish'">菜品榜</button>
     </div>
 
+    <div class="rank-search">
+      <input
+        v-model="rankKeyword"
+        type="search"
+        class="search-input"
+        :placeholder="activeList === 'dish' ? '搜索菜品、窗口（支持模糊匹配）' : '搜索窗口、摊位（支持模糊匹配）'"
+        :aria-label="activeList === 'dish' ? '搜索菜品' : '搜索窗口'"
+      />
+      <button v-if="rankKeyword" type="button" class="chip" @click="rankKeyword = ''">清除</button>
+    </div>
+
+    <div class="filter-group rank-region-filter" aria-label="榜单区域筛选">
+      <span class="filter-label" id="rank-region-label">区域</span>
+      <div class="filter-options" role="group" aria-labelledby="rank-region-label">
+        <button
+          v-for="region in rankingRegionOptions"
+          :key="region.id"
+          type="button"
+          class="chip"
+          :aria-pressed="selectedRankingRegions.includes(region.id)"
+          @click="toggleRankingRegion(region.id)"
+        >{{ region.name }}</button>
+      </div>
+    </div>
+
     <p v-if="loading" class="rank-hint">加载中...</p>
     <p v-else-if="error" class="rank-error">排行榜服务未连接：{{ error }}</p>
+    <p v-else-if="!selectedRankingRegions.length" class="rank-hint">请至少选择一个区域后查看榜单。</p>
 
     <ol v-else-if="visibleRows.length" class="rank-list">
       <li v-for="(row, index) in visibleRows" :key="row.id" class="rank-item">
@@ -269,7 +403,7 @@ onMounted(load);
         </div>
       </li>
     </ol>
-    <p v-else class="rank-hint">暂无菜品评分，先从菜单或抽取结果给菜品打分吧。</p>
+    <p v-else class="rank-hint">{{ rankKeyword.trim() ? '没有找到匹配的结果。' : (activeList === 'dish' ? '暂无菜品评分，先从菜单或抽取结果给菜品打分吧。' : '暂无窗口评分，先从抽选结果或手动选择给窗口打分吧。') }}</p>
   </main>
 </template>
 
@@ -294,7 +428,20 @@ onMounted(load);
 .dish-select { display: grid; gap: var(--spacing-xs); color: var(--color-text-secondary); font-size: 0.8rem; }
 .dish-select select { width: 100%; min-width: 0; min-height: 2.75rem; padding: 0.55rem 0.65rem; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 .dish-empty { margin: 0; padding: 0.8rem; color: var(--color-text-secondary); font-size: 0.85rem; background: var(--color-bg); border: 1px dashed var(--color-border); border-radius: var(--radius-md); }
+.search-input { width: 100%; min-width: 0; min-height: 2.6rem; padding: 0.5rem 0.7rem; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.manual-search { margin-top: var(--spacing-md); }
+.dish-filters { display: grid; gap: var(--spacing-sm); }
+.search-results { list-style: none; margin-top: var(--spacing-xs); max-height: 16rem; overflow-y: auto; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg); }
+.search-results > li + li { border-top: 1px solid var(--color-border); }
+.search-result { display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem; width: 100%; padding: 0.55rem 0.7rem; color: var(--color-text); background: transparent; border: 0; text-align: left; cursor: pointer; }
+.search-result:hover { background: var(--color-bg-secondary); }
+.search-result strong { font-weight: 600; }
+.search-result span { color: var(--color-text-secondary); font-size: 0.78rem; }
+.search-empty { padding: 0.6rem 0.7rem; color: var(--color-text-secondary); font-size: 0.82rem; }
+.rank-search { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-sm); margin-bottom: var(--spacing-md); }
+.rank-search .search-input { flex: 1; }
 .rank-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem; margin-bottom: var(--spacing-md); padding: 0.25rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-secondary); }
+.rank-region-filter { margin-bottom: var(--spacing-md); }
 .rank-tabs button { min-height: 2.6rem; padding: 0.55rem; color: var(--color-text-secondary); background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
 .rank-tabs button[aria-selected='true'] { color: var(--color-primary); background: var(--color-bg); box-shadow: var(--shadow-sm); font-weight: 700; }
 .rank-hint, .rank-error { text-align: center; color: var(--color-text-secondary); padding: var(--spacing-lg) 0; }
